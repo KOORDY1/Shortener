@@ -1,0 +1,1 @@
+"""Shorts backend application package."""
