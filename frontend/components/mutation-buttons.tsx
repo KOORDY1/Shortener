@@ -122,6 +122,46 @@ export function CandidateRejectButton({ candidateId }: { candidateId: string }) 
   );
 }
 
+export function CreateVideoDraftFromScriptButton({
+  candidateId,
+  scriptDraftId
+}: {
+  candidateId: string;
+  scriptDraftId: string;
+}) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+
+  return (
+    <button
+      className="button ghost"
+      disabled={loading}
+      onClick={async () => {
+        setLoading(true);
+        try {
+          const data = (await request(`/candidates/${candidateId}/video-drafts`, {
+            method: "POST",
+            body: JSON.stringify({
+              script_draft_id: scriptDraftId,
+              template_type: "context_commentary_v1",
+              burned_caption: true
+            })
+          })) as { video_draft_id?: string | null };
+          if (data?.video_draft_id) {
+            router.push(`/drafts/${data.video_draft_id}`);
+          } else {
+            router.refresh();
+          }
+        } finally {
+          setLoading(false);
+        }
+      }}
+    >
+      {loading ? "생성 중…" : "비디오 초안 만들기"}
+    </button>
+  );
+}
+
 export function SelectScriptDraftButton({ scriptDraftId }: { scriptDraftId: string }) {
   const { loading, run } = useAction();
   return (

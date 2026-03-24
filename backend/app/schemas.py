@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.db.models import Candidate, Episode, Job, ScriptDraft, Shot, TranscriptSegment
+from app.db.models import Candidate, Episode, Export, Job, ScriptDraft, Shot, TranscriptSegment, VideoDraft
 
 
 class EpisodeCreateResponse(BaseModel):
@@ -112,7 +112,9 @@ class AnalyzeRequest(BaseModel):
 class TriggerJobResponse(BaseModel):
     episode_id: str | None = None
     candidate_id: str | None = None
-    job_id: str
+    job_id: str | None = None
+    video_draft_id: str | None = None
+    export_id: str | None = None
     status: str
     message: str | None = None
 
@@ -325,3 +327,128 @@ class ScriptDraftResponse(BaseModel):
 
 class ScriptDraftListResponse(BaseModel):
     items: list[ScriptDraftResponse]
+
+
+class VideoDraftCreateRequest(BaseModel):
+    script_draft_id: str
+    template_type: str = "context_commentary_v1"
+    tts_voice_key: str | None = "ko_female_01"
+    burned_caption: bool = True
+
+
+class VideoDraftSummary(BaseModel):
+    id: str
+    candidate_id: str
+    script_draft_id: str
+    version_no: int
+    status: str
+    template_type: str
+    tts_voice_key: str | None
+    draft_video_path: str | None
+    thumbnail_path: str | None
+
+    @classmethod
+    def from_model(cls, vd: VideoDraft) -> "VideoDraftSummary":
+        return cls(
+            id=vd.id,
+            candidate_id=vd.candidate_id,
+            script_draft_id=vd.script_draft_id,
+            version_no=vd.version_no,
+            status=vd.status,
+            template_type=vd.template_type,
+            tts_voice_key=vd.tts_voice_key,
+            draft_video_path=vd.draft_video_path,
+            thumbnail_path=vd.thumbnail_path,
+        )
+
+
+class VideoDraftListResponse(BaseModel):
+    items: list[VideoDraftSummary]
+    total: int
+
+
+class VideoDraftDetailResponse(BaseModel):
+    id: str
+    candidate_id: str
+    script_draft_id: str
+    version_no: int
+    status: str
+    template_type: str
+    tts_voice_key: str | None
+    aspect_ratio: str
+    width: int
+    height: int
+    draft_video_path: str | None
+    subtitle_path: str | None
+    thumbnail_path: str | None
+    burned_caption: bool
+    render_config: dict[str, Any]
+    timeline_json: dict[str, Any]
+    operator_notes: str | None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_model(cls, vd: VideoDraft) -> "VideoDraftDetailResponse":
+        return cls(
+            id=vd.id,
+            candidate_id=vd.candidate_id,
+            script_draft_id=vd.script_draft_id,
+            version_no=vd.version_no,
+            status=vd.status,
+            template_type=vd.template_type,
+            tts_voice_key=vd.tts_voice_key,
+            aspect_ratio=vd.aspect_ratio,
+            width=vd.width,
+            height=vd.height,
+            draft_video_path=vd.draft_video_path,
+            subtitle_path=vd.subtitle_path,
+            thumbnail_path=vd.thumbnail_path,
+            burned_caption=vd.burned_caption,
+            render_config=vd.render_config_json or {},
+            timeline_json=vd.timeline_json or {},
+            operator_notes=vd.operator_notes,
+            metadata={},
+        )
+
+
+class VideoDraftPatchRequest(BaseModel):
+    operator_notes: str | None = None
+    timeline_json: dict[str, Any] | None = None
+    render_config: dict[str, Any] | None = None
+
+
+class ExportCreateRequest(BaseModel):
+    export_preset: str = "shorts_default"
+    include_srt: bool = True
+    include_script_txt: bool = True
+    include_metadata_json: bool = True
+
+
+class ExportDetailResponse(BaseModel):
+    id: str
+    video_draft_id: str
+    status: str
+    export_preset: str
+    export_video_path: str | None
+    export_subtitle_path: str | None
+    export_script_path: str | None
+    export_metadata_path: str | None
+    file_size_bytes: int | None
+    metadata: dict[str, Any]
+
+    @classmethod
+    def from_model(cls, exp: Export) -> "ExportDetailResponse":
+        return cls(
+            id=exp.id,
+            video_draft_id=exp.video_draft_id,
+            status=exp.status,
+            export_preset=exp.export_preset,
+            export_video_path=exp.export_video_path,
+            export_subtitle_path=exp.export_subtitle_path,
+            export_script_path=exp.export_script_path,
+            export_metadata_path=exp.export_metadata_path,
+            file_size_bytes=exp.file_size_bytes,
+            metadata=exp.metadata_json or {},
+        )
+
+

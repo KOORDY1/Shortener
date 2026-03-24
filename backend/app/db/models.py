@@ -25,6 +25,8 @@ class EpisodeStatus(str, Enum):
 class JobType(str, Enum):
     ANALYSIS = "analysis"
     SCRIPT_GENERATION = "script_generation"
+    VIDEO_DRAFT_RENDER = "video_draft_render"
+    EXPORT_RENDER = "export_render"
 
 
 class JobStatus(str, Enum):
@@ -40,6 +42,21 @@ class CandidateStatus(str, Enum):
     SELECTED = "selected"
     REJECTED = "rejected"
     DRAFTED = "drafted"
+
+
+class VideoDraftStatus(str, Enum):
+    CREATED = "created"
+    QUEUED = "queued"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class ExportStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
 
 
 class Episode(Base):
@@ -157,6 +174,10 @@ class Candidate(Base):
         cascade="all, delete-orphan",
     )
     jobs: Mapped[list[Job]] = relationship(back_populates="candidate")
+    video_drafts: Mapped[list["VideoDraft"]] = relationship(
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+    )
 
 
 class ScriptDraft(Base):
@@ -177,3 +198,66 @@ class ScriptDraft(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     candidate: Mapped[Candidate] = relationship(back_populates="script_drafts")
+    video_drafts: Mapped[list["VideoDraft"]] = relationship(
+        back_populates="script_draft",
+        cascade="all, delete-orphan",
+    )
+
+
+class VideoDraft(Base):
+    __tablename__ = "video_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"))
+    script_draft_id: Mapped[str] = mapped_column(ForeignKey("script_drafts.id", ondelete="CASCADE"))
+    version_no: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default=VideoDraftStatus.CREATED.value)
+    template_type: Mapped[str] = mapped_column(String(50), default="context_commentary_v1")
+    tts_voice_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    aspect_ratio: Mapped[str] = mapped_column(String(20), default="9:16")
+    width: Mapped[int] = mapped_column(Integer, default=1080)
+    height: Mapped[int] = mapped_column(Integer, default=1920)
+    draft_video_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subtitle_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    waveform_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thumbnail_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    burned_caption: Mapped[bool] = mapped_column(Boolean, default=True)
+    render_config_json: Mapped[dict[str, Any]] = mapped_column("render_config", JSON, default=dict)
+    timeline_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    operator_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    candidate: Mapped[Candidate] = relationship(back_populates="video_drafts")
+    script_draft: Mapped[ScriptDraft] = relationship(back_populates="video_drafts")
+    exports: Mapped[list["Export"]] = relationship(
+        back_populates="video_draft",
+        cascade="all, delete-orphan",
+    )
+
+
+class Export(Base):
+    __tablename__ = "exports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    video_draft_id: Mapped[str] = mapped_column(ForeignKey("video_drafts.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(32), default=ExportStatus.QUEUED.value)
+    export_video_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    export_subtitle_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    export_script_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    export_metadata_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    export_preset: Mapped[str] = mapped_column(String(50), default="shorts_default")
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    video_draft: Mapped[VideoDraft] = relationship(back_populates="exports")

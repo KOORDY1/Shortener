@@ -5,7 +5,7 @@ import { CandidateGenerateScriptsButton } from "@/components/mutation-buttons";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { formatDuration, formatTimecode } from "@/lib/format";
-import { getCandidate, getCandidateScriptDrafts, getJobs } from "@/lib/api";
+import { getCandidate, getCandidateScriptDrafts, getCandidateVideoDrafts, getJobs } from "@/lib/api";
 
 export default async function CandidateDetailPage({
   params
@@ -15,10 +15,11 @@ export default async function CandidateDetailPage({
   const { candidateId } = await params;
 
   try {
-    const [candidate, drafts, jobs] = await Promise.all([
+    const [candidate, drafts, jobs, videoDrafts] = await Promise.all([
       getCandidate(candidateId),
       getCandidateScriptDrafts(candidateId),
-      getJobs({ candidate_id: candidateId })
+      getJobs({ candidate_id: candidateId }),
+      getCandidateVideoDrafts(candidateId)
     ]);
 
     return (
@@ -113,6 +114,7 @@ export default async function CandidateDetailPage({
           candidateId={candidateId}
           initialJobs={jobs.items}
           initialDrafts={drafts.items}
+          initialVideoDrafts={videoDrafts.items}
         />
       </main>
     );

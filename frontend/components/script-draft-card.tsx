@@ -1,12 +1,17 @@
 import { ScriptDraft } from "@/lib/types";
 import { StatusBadge } from "@/components/status-badge";
-import { SelectScriptDraftButton, UpdateScriptDraftForm } from "@/components/mutation-buttons";
+import {
+  CreateVideoDraftFromScriptButton,
+  SelectScriptDraftButton,
+  UpdateScriptDraftForm
+} from "@/components/mutation-buttons";
 
 type Props = {
   draft: ScriptDraft;
+  candidateId: string;
 };
 
-export function ScriptDraftCard({ draft }: Props) {
+export function ScriptDraftCard({ draft, candidateId }: Props) {
   return (
     <div className="draft-card">
       <div className="spaced">
@@ -33,6 +38,7 @@ export function ScriptDraftCard({ draft }: Props) {
       </div>
       <div className="row">
         <SelectScriptDraftButton scriptDraftId={draft.id} />
+        <CreateVideoDraftFromScriptButton candidateId={candidateId} scriptDraftId={draft.id} />
       </div>
       <UpdateScriptDraftForm draft={draft} />
     </div>

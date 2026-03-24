@@ -4,9 +4,12 @@ import {
   Episode,
   EpisodeListResponse,
   EpisodeTimeline,
+  ExportDetail,
   Job,
   JobListResponse,
-  ScriptDraftListResponse
+  ScriptDraftListResponse,
+  VideoDraftDetail,
+  VideoDraftListResponse
 } from "@/lib/types";
 
 const apiBaseUrl =
@@ -79,12 +82,32 @@ export async function getCandidateScriptDrafts(candidateId: string): Promise<Scr
 export async function getJobs(filters?: {
   episode_id?: string;
   candidate_id?: string;
+  job_type?: string;
+  status?: string;
+  page?: number;
+  page_size?: number;
 }): Promise<JobListResponse> {
   const query = new URLSearchParams();
   if (filters?.episode_id) query.set("episode_id", filters.episode_id);
   if (filters?.candidate_id) query.set("candidate_id", filters.candidate_id);
+  if (filters?.job_type) query.set("job_type", filters.job_type);
+  if (filters?.status) query.set("status", filters.status);
+  if (filters?.page != null) query.set("page", String(filters.page));
+  if (filters?.page_size != null) query.set("page_size", String(filters.page_size));
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return apiFetch<JobListResponse>(`/jobs${suffix}`);
+}
+
+export async function getCandidateVideoDrafts(candidateId: string): Promise<VideoDraftListResponse> {
+  return apiFetch<VideoDraftListResponse>(`/candidates/${candidateId}/video-drafts`);
+}
+
+export async function getVideoDraft(videoDraftId: string): Promise<VideoDraftDetail> {
+  return apiFetch<VideoDraftDetail>(`/video-drafts/${videoDraftId}`);
+}
+
+export async function getExport(exportId: string): Promise<ExportDetail> {
+  return apiFetch<ExportDetail>(`/exports/${exportId}`);
 }
 
 export { apiBaseUrl };

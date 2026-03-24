@@ -122,3 +122,54 @@ export type ScriptDraft = {
 export type ScriptDraftListResponse = {
   items: ScriptDraft[];
 };
+
+export type VideoDraftSummary = {
+  id: string;
+  candidate_id: string;
+  script_draft_id: string;
+  version_no: number;
+  status: string;
+  template_type: string;
+  tts_voice_key?: string | null;
+  draft_video_path?: string | null;
+  thumbnail_path?: string | null;
+};
+
+export type VideoDraftListResponse = {
+  items: VideoDraftSummary[];
+  total: number;
+};
+
+export type VideoDraftDetail = {
+  id: string;
+  candidate_id: string;
+  script_draft_id: string;
+  version_no: number;
+  status: string;
+  template_type: string;
+  tts_voice_key?: string | null;
+  aspect_ratio: string;
+  width: number;
+  height: number;
+  draft_video_path?: string | null;
+  subtitle_path?: string | null;
+  thumbnail_path?: string | null;
+  burned_caption: boolean;
+  render_config: Record<string, unknown>;
+  timeline_json: Record<string, unknown>;
+  operator_notes?: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type ExportDetail = {
+  id: string;
+  video_draft_id: string;
+  status: string;
+  export_preset: string;
+  export_video_path?: string | null;
+  export_subtitle_path?: string | null;
+  export_script_path?: string | null;
+  export_metadata_path?: string | null;
+  file_size_bytes?: number | null;
+  metadata: Record<string, unknown>;
+};
