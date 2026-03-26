@@ -94,11 +94,82 @@ export function VideoDraftTemplateEditor({ draft }: Props) {
   }
 
   const slots = (config.text_slots as Record<string, Record<string, unknown>> | undefined) ?? {};
+  const previewStyle = {
+    width: 240,
+    aspectRatio: "9 / 16",
+    background: String(config.background_color ?? "#111111"),
+    borderRadius: 16,
+    overflow: "hidden" as const,
+    border: "1px solid rgba(255,255,255,0.08)"
+  };
+  const topSafe = Number(config.top_safe_area_height ?? 240);
+  const bottomSafe = Number(config.bottom_safe_area_height ?? 300);
 
   return (
     <div className="panel stack">
       <h2 className="section-title">템플릿 설정</h2>
       {error ? <p className="muted" style={{ color: "var(--danger, #c00)" }}>{error}</p> : null}
+      <div className="panel soft stack">
+        <strong>슬롯 미리보기</strong>
+        <div style={previewStyle}>
+          <div
+            style={{
+              height: `${Math.max(12, (topSafe / Number(draft.height || 1920)) * 100)}%`,
+              padding: 12,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              color: String(slots.top_title?.color ?? "#FFFFFF"),
+              fontSize: Math.max(12, Number(slots.top_title?.font_size ?? 60) / 4)
+            }}
+          >
+            {String(slots.top_title?.text ?? "").trim() || "TOP TITLE"}
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 180,
+              background: "#222",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#888"
+            }}
+          >
+            content area
+          </div>
+          <div
+            style={{
+              height: `${Math.max(14, (bottomSafe / Number(draft.height || 1920)) * 100)}%`,
+              padding: 12,
+              display: "flex",
+              flexDirection: "column" as const,
+              justifyContent: "space-between",
+              gap: 8
+            }}
+          >
+            <div
+              style={{
+                textAlign: "center",
+                color: String(slots.bottom_caption?.color ?? "#F8F8F8"),
+                fontSize: Math.max(11, Number(slots.bottom_caption?.font_size ?? 34) / 4)
+              }}
+            >
+              {String(slots.bottom_caption?.text ?? "").trim() || "BOTTOM CAPTION"}
+            </div>
+            <div
+              style={{
+                textAlign: "left",
+                color: String(slots.source_label?.color ?? "#DDDDDD"),
+                fontSize: Math.max(10, Number(slots.source_label?.font_size ?? 24) / 4)
+              }}
+            >
+              {String(slots.source_label?.text ?? "").trim() || "SOURCE LABEL"}
+            </div>
+          </div>
+        </div>
+      </div>
       <div className="grid two">
         <label className="field">
           <span>핏 모드</span>

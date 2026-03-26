@@ -258,7 +258,9 @@ def _is_duplicate_candidate(candidate: ScoredWindow, kept: Sequence[ScoredWindow
                 >= NMS_IOU_THRESHOLD
             ):
                 return True
-        if candidate.metadata_json.get("clip_spans") == item.metadata_json.get("clip_spans"):
+        candidate_spans = candidate.metadata_json.get("clip_spans")
+        item_spans = item.metadata_json.get("clip_spans")
+        if candidate_spans and item_spans and candidate_spans == item_spans:
             return True
     return any(_is_text_near_duplicate(candidate, item) for item in kept)
 

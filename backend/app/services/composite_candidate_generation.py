@@ -3,10 +3,10 @@ from __future__ import annotations
 from app.services.candidate_generation import ScoredWindow
 
 MAX_COMPOSITE_CANDIDATES = 4
-MAX_COMPOSITE_INPUTS = 8
-MIN_GAP_SEC = 3.0
-MAX_GAP_SEC = 150.0
-MAX_TOTAL_DURATION_SEC = 42.0
+MAX_COMPOSITE_INPUTS = 14
+MIN_GAP_SEC = 6.0
+MAX_GAP_SEC = 420.0
+MAX_TOTAL_DURATION_SEC = 64.0
 
 
 def _tokens(window: ScoredWindow) -> set[str]:
@@ -47,16 +47,21 @@ def build_composite_candidates(windows: list[ScoredWindow]) -> list[ScoredWindow
             right_tokens = _tokens(right)
             overlap_score = _jaccard(left_tokens, right_tokens)
             right_focus = str(right.metadata_json.get("ranking_focus") or "")
-            if overlap_score < 0.08 and left_focus != right_focus:
+            same_focus = left_focus == right_focus and bool(left_focus)
+            if overlap_score < 0.04 and not same_focus:
                 continue
 
+            gap_bonus = 0.35 if gap <= 45 else 0.18 if gap <= 120 else 0.0
+            duration_penalty = 0.0 if total_duration <= 50 else min(0.45, (total_duration - 50) / 30.0)
             total_score = round(
                 min(
                     10.0,
                     ((left.total_score + right.total_score) / 2.0)
-                    + overlap_score * 0.7
-                    + (0.25 if left_focus == right_focus and left_focus else 0.0)
-                    - min(0.35, gap / 300.0),
+                    + overlap_score * 0.9
+                    + (0.35 if same_focus else 0.0)
+                    + gap_bonus
+                    - min(0.45, gap / 360.0)
+                    - duration_penalty,
                 ),
                 2,
             )
