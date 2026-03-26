@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
-import { getExport, getVideoDraft } from "@/lib/api";
+import { apiBaseUrl, getExport, getVideoDraft } from "@/lib/api";
 
 export default async function ExportDetailPage({
   params
@@ -46,27 +46,55 @@ export default async function ExportDetailPage({
         <div className="panel stack">
           <h2 className="section-title">파일 경로</h2>
           {exp.export_video_path ? (
+            <video
+              className="source-video"
+              controls
+              preload="metadata"
+              src={`${apiBaseUrl}/exports/${exp.id}/video?v=${encodeURIComponent(exp.export_video_path)}`}
+            />
+          ) : null}
+          {exp.export_video_path ? (
             <div>
               <span className="muted">영상</span>
               <p className="tiny path">{exp.export_video_path}</p>
+              <p>
+                <a href={`${apiBaseUrl}/exports/${exp.id}/video`} className="link-button">
+                  영상 다운로드
+                </a>
+              </p>
             </div>
           ) : null}
           {exp.export_subtitle_path ? (
             <div>
               <span className="muted">자막</span>
               <p className="tiny path">{exp.export_subtitle_path}</p>
+              <p>
+                <a href={`${apiBaseUrl}/exports/${exp.id}/subtitle`} className="link-button">
+                  자막 다운로드
+                </a>
+              </p>
             </div>
           ) : null}
           {exp.export_script_path ? (
             <div>
               <span className="muted">스크립트</span>
               <p className="tiny path">{exp.export_script_path}</p>
+              <p>
+                <a href={`${apiBaseUrl}/exports/${exp.id}/script`} className="link-button">
+                  스크립트 다운로드
+                </a>
+              </p>
             </div>
           ) : null}
           {exp.export_metadata_path ? (
             <div>
               <span className="muted">메타데이터</span>
               <p className="tiny path">{exp.export_metadata_path}</p>
+              <p>
+                <a href={`${apiBaseUrl}/exports/${exp.id}/metadata`} className="link-button">
+                  메타데이터 다운로드
+                </a>
+              </p>
             </div>
           ) : null}
         </div>

@@ -249,16 +249,30 @@ def _is_text_near_duplicate(candidate: ScoredWindow, kept: ScoredWindow) -> bool
 
 
 def _is_duplicate_candidate(candidate: ScoredWindow, kept: Sequence[ScoredWindow]) -> bool:
-    if any(
-        _iou_time(candidate.start_time, candidate.end_time, item.start_time, item.end_time)
-        >= NMS_IOU_THRESHOLD
-        for item in kept
-    ):
-        return True
+    candidate_is_composite = bool(candidate.metadata_json.get("composite"))
+    for item in kept:
+        item_is_composite = bool(item.metadata_json.get("composite"))
+        if not candidate_is_composite and not item_is_composite:
+            if (
+                _iou_time(candidate.start_time, candidate.end_time, item.start_time, item.end_time)
+                >= NMS_IOU_THRESHOLD
+            ):
+                return True
+        if candidate.metadata_json.get("clip_spans") == item.metadata_json.get("clip_spans"):
+            return True
     return any(_is_text_near_duplicate(candidate, item) for item in kept)
 
 
 def _window_duration(window: ScoredWindow) -> float:
+    clip_spans = window.metadata_json.get("clip_spans")
+    if isinstance(clip_spans, list) and clip_spans:
+        total = 0.0
+        for span in clip_spans:
+            try:
+                total += max(0.0, float(span.get("end_time")) - float(span.get("start_time")))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return round(total, 3)
     return max(0.0, float(window.end_time) - float(window.start_time))
 
 

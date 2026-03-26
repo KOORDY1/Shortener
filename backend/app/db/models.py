@@ -236,6 +236,7 @@ class VideoDraft(Base):
     burned_caption: Mapped[bool] = mapped_column(Boolean, default=True)
     render_config_json: Mapped[dict[str, Any]] = mapped_column("render_config", JSON, default=dict)
     timeline_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     operator_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

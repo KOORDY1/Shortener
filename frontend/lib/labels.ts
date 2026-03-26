@@ -25,7 +25,8 @@ const BADGE_LABELS: Record<string, string> = {
   ingest_episode: "에피소드 수집",
   created: "생성",
   approved: "승인",
-  completed: "완료"
+  completed: "완료",
+  composite: "복합 후보"
 };
 
 export function badgeLabel(value: string): string {

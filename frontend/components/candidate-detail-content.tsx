@@ -120,7 +120,27 @@ export function CandidateDetailContent({
           <span className="muted">총점</span>
           <strong>{candidate.scores.total_score ?? "-"}</strong>
         </div>
+        <div className="kpi">
+          <span className="muted">후보 형태</span>
+          <strong>{candidate.composite ? "Composite" : "Single span"}</strong>
+        </div>
       </div>
+
+      {(candidate.clip_spans ?? []).length > 0 ? (
+        <div className="panel">
+          <h2 className="section-title">클립 span</h2>
+          <div className="stack">
+            {(candidate.clip_spans ?? []).map((span, index) => (
+              <div key={`${span.order}-${index}`} className="timeline-block">
+                <strong>
+                  #{index + 1} {formatTimecode(span.start_time)} - {formatTimecode(span.end_time)}
+                </strong>
+                <div>{span.role ?? (index === candidate.primary_span_index ? "primary" : "span")}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="panel">
         <div className="row">

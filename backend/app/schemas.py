@@ -15,6 +15,7 @@ from app.db.models import (
     TranscriptSegment,
     VideoDraft,
 )
+from app.services.candidate_spans import candidate_clip_spans, is_composite_candidate
 
 
 class EpisodeCreateResponse(BaseModel):
@@ -221,6 +222,8 @@ class CandidateSummary(BaseModel):
     end_time: float
     duration_seconds: float
     total_score: float
+    composite: bool = False
+    span_count: int = 1
 
     @classmethod
     def from_model(cls, candidate: Candidate) -> "CandidateSummary":
@@ -234,6 +237,8 @@ class CandidateSummary(BaseModel):
             end_time=candidate.end_time,
             duration_seconds=candidate.duration_seconds,
             total_score=candidate.total_score,
+            composite=is_composite_candidate(candidate),
+            span_count=len(candidate_clip_spans(candidate)),
         )
 
 
@@ -261,6 +266,9 @@ class CandidateDetailResponse(BaseModel):
     preview_clip_error: str | None = None
     render_config: dict[str, Any] = Field(default_factory=dict)
     has_edited_ass: bool = False
+    composite: bool = False
+    primary_span_index: int = 0
+    clip_spans: list[dict[str, Any]] = Field(default_factory=list)
 
     @classmethod
     def from_model(
@@ -271,6 +279,7 @@ class CandidateDetailResponse(BaseModel):
     ) -> "CandidateDetailResponse":
         meta = candidate.metadata_json or {}
         editor_meta = meta.get("render_editor") or {}
+        clip_spans = candidate_clip_spans(candidate)
         return cls(
             id=candidate.id,
             episode_id=candidate.episode_id,
@@ -290,6 +299,9 @@ class CandidateDetailResponse(BaseModel):
             preview_clip_error=editor_meta.get("preview_clip_error"),
             render_config=editor_meta.get("render_config") or {},
             has_edited_ass=bool(editor_meta.get("edited_ass_path")),
+            composite=bool(meta.get("composite")),
+            primary_span_index=int(meta.get("primary_span_index") or 0),
+            clip_spans=clip_spans,
         )
 
 
@@ -406,9 +418,10 @@ class ScriptDraftListResponse(BaseModel):
 
 class VideoDraftCreateRequest(BaseModel):
     script_draft_id: str
-    template_type: str = "context_commentary_v1"
+    template_type: str = "dramashorts_v1"
     tts_voice_key: str | None = "ko_female_01"
     burned_caption: bool = True
+    render_config: dict[str, Any] | None = None
 
 
 class VideoDraftSummary(BaseModel):
@@ -421,6 +434,7 @@ class VideoDraftSummary(BaseModel):
     tts_voice_key: str | None
     draft_video_path: str | None
     thumbnail_path: str | None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_model(cls, vd: VideoDraft) -> "VideoDraftSummary":
@@ -434,6 +448,7 @@ class VideoDraftSummary(BaseModel):
             tts_voice_key=vd.tts_voice_key,
             draft_video_path=vd.draft_video_path,
             thumbnail_path=vd.thumbnail_path,
+            metadata=vd.metadata_json or {},
         )
 
 
@@ -482,7 +497,7 @@ class VideoDraftDetailResponse(BaseModel):
             render_config=vd.render_config_json or {},
             timeline_json=vd.timeline_json or {},
             operator_notes=vd.operator_notes,
-            metadata={},
+            metadata=vd.metadata_json or {},
         )
 
 

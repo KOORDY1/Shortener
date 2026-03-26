@@ -149,7 +149,7 @@ export function VideoDraftActions({ draft }: Props) {
           disabled={!!actionBusy || isRejected}
           onClick={onRerender}
         >
-          {actionBusy === "rerender" ? "재렌더 중…" : "샘플 재렌더"}
+          {actionBusy === "rerender" ? "재렌더 중…" : "템플릿 재렌더"}
         </button>
         <button
           className="button ghost"
@@ -181,7 +181,7 @@ export function VideoDraftActions({ draft }: Props) {
       </div>
       <div className="row">
         <button className="button" type="button" disabled={exporting} onClick={onExport}>
-          {exporting ? "보내는 중…" : "샘플 보내기"}
+          {exporting ? "보내는 중…" : "최종 export 만들기"}
         </button>
       </div>
       {lastExport ? (

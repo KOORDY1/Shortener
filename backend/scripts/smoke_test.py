@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -27,8 +28,37 @@ def prepare_smoke_env() -> None:
     os.environ["ALLOW_MOCK_LLM_FALLBACK"] = "true"
 
 
+def build_smoke_video_bytes() -> bytes:
+    output_path = SMOKE_DATA_DIR / "sample.mp4"
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=#202020:s=1280x720:d=18",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=44100:d=18",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        str(output_path),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return output_path.read_bytes()
+
+
 def run() -> None:
     prepare_smoke_env()
+    video_bytes = build_smoke_video_bytes()
 
     from fastapi.testclient import TestClient
 
@@ -46,7 +76,7 @@ def run() -> None:
                 "original_language": "en",
                 "target_channel": "kr_us_drama",
             },
-            files={"video_file": ("episode.mp4", b"fake video bytes for smoke test", "video/mp4")},
+            files={"video_file": ("episode.mp4", video_bytes, "video/mp4")},
         )
         create_response.raise_for_status()
         episode = create_response.json()

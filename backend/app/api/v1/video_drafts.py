@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_video_draft_or_404
@@ -13,14 +16,37 @@ from app.schemas import (
     VideoDraftPatchRequest,
     VideoDraftRejectRequest,
 )
-from app.services.video_draft_service import create_mock_export, run_mock_rerender
+from app.services.video_draft_service import create_export, run_rerender
 
 router = APIRouter(tags=["video-drafts"])
+
+
+def _resolve_file(path_str: str | None) -> Path:
+    if not path_str:
+        raise HTTPException(status_code=404, detail="file not found")
+    path = Path(path_str).expanduser().resolve()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    return path
 
 
 @router.get("/video-drafts/{video_draft_id}", response_model=VideoDraftDetailResponse)
 def get_video_draft(video_draft_id: str, db: Session = Depends(get_db)) -> VideoDraftDetailResponse:
     return VideoDraftDetailResponse.from_model(get_video_draft_or_404(db, video_draft_id))
+
+
+@router.get("/video-drafts/{video_draft_id}/video")
+def stream_video_draft(video_draft_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    video_draft = get_video_draft_or_404(db, video_draft_id)
+    path = _resolve_file(video_draft.draft_video_path)
+    return FileResponse(path, media_type="video/mp4", filename=path.name, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/video-drafts/{video_draft_id}/subtitle")
+def download_video_draft_subtitle(video_draft_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    video_draft = get_video_draft_or_404(db, video_draft_id)
+    path = _resolve_file(video_draft.subtitle_path)
+    return FileResponse(path, media_type="text/plain; charset=utf-8", filename=path.name, headers={"Cache-Control": "no-store"})
 
 
 @router.patch("/video-drafts/{video_draft_id}", response_model=VideoDraftDetailResponse)
@@ -46,7 +72,7 @@ def patch_video_draft(
 def rerender_video_draft(video_draft_id: str, db: Session = Depends(get_db)) -> TriggerJobResponse:
     vd = get_video_draft_or_404(db, video_draft_id)
     try:
-        job, updated = run_mock_rerender(db, vd)
+        job, updated = run_rerender(db, vd)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return TriggerJobResponse(
@@ -54,7 +80,7 @@ def rerender_video_draft(video_draft_id: str, db: Session = Depends(get_db)) -> 
         job_id=job.id,
         video_draft_id=updated.id,
         status=job.status,
-        message="Mock rerender completed (no FFmpeg worker)",
+        message="Video draft rerendered",
     )
 
 
@@ -95,7 +121,7 @@ def create_video_draft_export(
     db: Session = Depends(get_db),
 ) -> TriggerJobResponse:
     vd = get_video_draft_or_404(db, video_draft_id)
-    exp = create_mock_export(
+    exp = create_export(
         db,
         video_draft=vd,
         export_preset=request.export_preset,
@@ -108,5 +134,5 @@ def create_video_draft_export(
         video_draft_id=vd.id,
         export_id=exp.id,
         status=exp.status,
-        message="Mock export created",
+        message="Export created",
     )

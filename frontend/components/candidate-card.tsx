@@ -27,6 +27,7 @@ export function CandidateCard({ candidate }: Props) {
         </div>
         <div className="row">
           <StatusBadge value={candidate.status} />
+          {candidate.composite ? <StatusBadge value="composite" /> : null}
         </div>
       </div>
       <div className="row">
@@ -37,6 +38,10 @@ export function CandidateCard({ candidate }: Props) {
         <div className="kpi">
           <span className="muted">총점</span>
           <strong>{candidate.total_score.toFixed(2)}</strong>
+        </div>
+        <div className="kpi">
+          <span className="muted">Span</span>
+          <strong>{candidate.span_count ?? 1}</strong>
         </div>
       </div>
       <div className="row">

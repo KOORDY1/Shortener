@@ -60,6 +60,15 @@ export type CandidateSummary = {
   end_time: number;
   duration_seconds: number;
   total_score: number;
+  composite?: boolean;
+  span_count?: number;
+};
+
+export type ClipSpan = {
+  start_time: number;
+  end_time: number;
+  order: number;
+  role?: string | null;
 };
 
 export type CandidateListResponse = {
@@ -102,6 +111,9 @@ export type CandidateDetail = {
   preview_clip_error?: string | null;
   render_config?: ShortClipRenderConfig;
   has_edited_ass?: boolean;
+  composite?: boolean;
+  primary_span_index?: number;
+  clip_spans?: ClipSpan[];
 };
 
 export type ShortClipSubtitleStyle = {
@@ -173,6 +185,7 @@ export type VideoDraftSummary = {
   tts_voice_key?: string | null;
   draft_video_path?: string | null;
   thumbnail_path?: string | null;
+  metadata: Record<string, unknown>;
 };
 
 export type VideoDraftListResponse = {

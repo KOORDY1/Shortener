@@ -15,8 +15,10 @@ from app.db.models import (
     TranscriptSegment,
 )
 from app.services.analysis_metadata import mark_analysis_completed, mark_analysis_running
+from app.services.candidate_spans import candidate_clip_spans, clip_spans_total_duration
 from app.services.storage_service import episode_root, write_placeholder
 from app.services.candidate_generation import build_candidates_for_episode, dedupe_scored_windows
+from app.services.composite_candidate_generation import build_composite_candidates
 from app.services.keyframe_extraction import extract_keyframes_for_episode
 from app.services.media_probe import probe_media_metadata
 from app.services.proxy_transcoding import ensure_analysis_proxy
@@ -382,6 +384,7 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
 
     mark_analysis_running(episode, "generate_candidates")
     scored_windows = build_candidates_for_episode(db, episode_id)
+    scored_windows.extend(build_composite_candidates(scored_windows))
     scored_windows, vision_summary = refine_candidates_with_vision(
         db,
         episode,
@@ -391,6 +394,10 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
     scored_windows = dedupe_scored_windows(scored_windows)
     for index, sw in enumerate(scored_windows, start=1):
         hint = sw.title_hint[:255] if len(sw.title_hint) > 255 else sw.title_hint
+        clip_spans = sw.metadata_json.get("clip_spans") if isinstance(sw.metadata_json, dict) else None
+        duration_seconds = (
+            clip_spans_total_duration(clip_spans) if isinstance(clip_spans, list) and clip_spans else round(sw.end_time - sw.start_time, 3)
+        )
         db.add(
             Candidate(
                 episode_id=episode_id,
@@ -400,7 +407,7 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
                 title_hint=hint,
                 start_time=sw.start_time,
                 end_time=sw.end_time,
-                duration_seconds=round(sw.end_time - sw.start_time, 3),
+                duration_seconds=duration_seconds,
                 total_score=sw.total_score,
                 scores_json=sw.scores_json,
                 metadata_json=sw.metadata_json,
@@ -431,22 +438,36 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
 
 
 def candidate_segments(db: Session, candidate: Candidate) -> list[TranscriptSegment]:
-    query = (
-        select(TranscriptSegment)
-        .where(TranscriptSegment.episode_id == candidate.episode_id)
-        .where(TranscriptSegment.start_time <= candidate.end_time)
-        .where(TranscriptSegment.end_time >= candidate.start_time)
-        .order_by(TranscriptSegment.start_time.asc())
+    spans = candidate_clip_spans(candidate)
+    segments = list(
+        db.scalars(
+            select(TranscriptSegment)
+            .where(TranscriptSegment.episode_id == candidate.episode_id)
+            .order_by(TranscriptSegment.start_time.asc())
+        )
     )
-    return list(db.scalars(query))
+    return [
+        segment
+        for segment in segments
+        if any(
+            float(segment.start_time) <= span["end_time"] and float(segment.end_time) >= span["start_time"]
+            for span in spans
+        )
+    ]
 
 
 def candidate_shots(db: Session, candidate: Candidate) -> list[Shot]:
-    query = (
-        select(Shot)
-        .where(Shot.episode_id == candidate.episode_id)
-        .where(Shot.start_time <= candidate.end_time)
-        .where(Shot.end_time >= candidate.start_time)
-        .order_by(Shot.shot_index.asc())
+    spans = candidate_clip_spans(candidate)
+    shots = list(
+        db.scalars(
+            select(Shot).where(Shot.episode_id == candidate.episode_id).order_by(Shot.shot_index.asc())
+        )
     )
-    return list(db.scalars(query))
+    return [
+        shot
+        for shot in shots
+        if any(
+            float(shot.start_time) <= span["end_time"] and float(shot.end_time) >= span["start_time"]
+            for span in spans
+        )
+    ]

@@ -2,7 +2,9 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { VideoDraftActions } from "@/components/video-draft-actions";
+import { VideoDraftTemplateEditor } from "@/components/video-draft-template-editor";
 import { getVideoDraft } from "@/lib/api";
+import { apiBaseUrl } from "@/lib/api";
 
 export default async function VideoDraftPage({
   params
@@ -46,6 +48,12 @@ export default async function VideoDraftPage({
               <p className="tiny path">{draft.draft_video_path}</p>
             </div>
           ) : null}
+          {draft.metadata ? (
+            <div>
+              <span className="muted">렌더 메타</span>
+              <p className="tiny path">{JSON.stringify(draft.metadata)}</p>
+            </div>
+          ) : null}
           {draft.tts_voice_key ? (
             <div>
               <span className="muted">TTS</span>
@@ -54,6 +62,25 @@ export default async function VideoDraftPage({
           ) : null}
         </div>
 
+        <div className="panel">
+          <h2 className="section-title">미리보기</h2>
+          {draft.draft_video_path ? (
+            <video
+              className="source-video"
+              controls
+              preload="metadata"
+              src={`${apiBaseUrl}/video-drafts/${draft.id}/video?v=${encodeURIComponent(
+                draft.draft_video_path
+              )}`}
+            />
+          ) : (
+            <p className="muted">아직 렌더된 비디오가 없습니다.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="grid two">
+        <VideoDraftTemplateEditor draft={draft} />
         <div className="panel">
           <h2 className="section-title">편집 · 보내기</h2>
           <VideoDraftActions draft={draft} />

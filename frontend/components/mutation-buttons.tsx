@@ -260,7 +260,7 @@ export function CreateVideoDraftFromScriptButton({
             method: "POST",
             body: JSON.stringify({
               script_draft_id: scriptDraftId,
-              template_type: "context_commentary_v1",
+              template_type: "dramashorts_v1",
               burned_caption: true
             })
           })) as { video_draft_id?: string | null };
