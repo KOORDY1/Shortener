@@ -15,16 +15,16 @@ export function ScriptDraftCard({ draft, candidateId }: Props) {
   return (
     <div className="draft-card">
       <div className="spaced">
-        <strong>Version {draft.version_no}</strong>
+        <strong>버전 {draft.version_no}</strong>
         {draft.is_selected ? <StatusBadge value="selected" /> : null}
       </div>
       <div className="stack">
         <div>
-          <span className="muted">Hook</span>
+          <span className="muted">훅</span>
           <p>{draft.hook_text}</p>
         </div>
         <div>
-          <span className="muted">Body</span>
+          <span className="muted">본문</span>
           <p>{draft.body_text}</p>
         </div>
         <div>
@@ -32,7 +32,7 @@ export function ScriptDraftCard({ draft, candidateId }: Props) {
           <p>{draft.cta_text}</p>
         </div>
         <div>
-          <span className="muted">Titles</span>
+          <span className="muted">제목 후보</span>
           <p>{draft.title_options.join(" / ")}</p>
         </div>
       </div>

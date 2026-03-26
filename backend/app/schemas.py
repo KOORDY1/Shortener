@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.db.models import Candidate, Episode, Export, Job, ScriptDraft, Shot, TranscriptSegment, VideoDraft
+from app.db.models import (
+    Candidate,
+    Episode,
+    Export,
+    Job,
+    ScriptDraft,
+    Shot,
+    TranscriptSegment,
+    VideoDraft,
+)
 
 
 class EpisodeCreateResponse(BaseModel):
@@ -107,6 +116,7 @@ class EpisodeDetailResponse(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     force_reanalyze: bool = False
+    ignore_cache: bool = False
 
 
 class TriggerJobResponse(BaseModel):
@@ -117,6 +127,11 @@ class TriggerJobResponse(BaseModel):
     export_id: str | None = None
     status: str
     message: str | None = None
+
+
+class EpisodeOperationOkResponse(BaseModel):
+    ok: bool = True
+    message: str
 
 
 class JobResponse(BaseModel):
@@ -206,8 +221,6 @@ class CandidateSummary(BaseModel):
     end_time: float
     duration_seconds: float
     total_score: float
-    risk_score: float
-    risk_level: str
 
     @classmethod
     def from_model(cls, candidate: Candidate) -> "CandidateSummary":
@@ -221,8 +234,6 @@ class CandidateSummary(BaseModel):
             end_time=candidate.end_time,
             duration_seconds=candidate.duration_seconds,
             total_score=candidate.total_score,
-            risk_score=candidate.risk_score,
-            risk_level=candidate.risk_level,
         )
 
 
@@ -241,10 +252,15 @@ class CandidateDetailResponse(BaseModel):
     end_time: float
     duration_seconds: float
     scores: dict[str, Any]
-    risk: dict[str, Any]
     metadata: dict[str, Any]
     shots: list[ShotResponse]
     transcript_segments: list[TranscriptSegmentResponse]
+    short_clip_path: str | None = None
+    short_clip_error: str | None = None
+    preview_clip_path: str | None = None
+    preview_clip_error: str | None = None
+    render_config: dict[str, Any] = Field(default_factory=dict)
+    has_edited_ass: bool = False
 
     @classmethod
     def from_model(
@@ -253,6 +269,8 @@ class CandidateDetailResponse(BaseModel):
         segments: list[TranscriptSegment],
         shots: list[Shot],
     ) -> "CandidateDetailResponse":
+        meta = candidate.metadata_json or {}
+        editor_meta = meta.get("render_editor") or {}
         return cls(
             id=candidate.id,
             episode_id=candidate.episode_id,
@@ -263,14 +281,15 @@ class CandidateDetailResponse(BaseModel):
             end_time=candidate.end_time,
             duration_seconds=candidate.duration_seconds,
             scores=candidate.scores_json or {},
-            risk={
-                "risk_score": candidate.risk_score,
-                "risk_level": candidate.risk_level,
-                "reasons": candidate.risk_reasons or [],
-            },
-            metadata=candidate.metadata_json or {},
+            metadata=meta,
             shots=[ShotResponse.from_model(item) for item in shots],
             transcript_segments=[TranscriptSegmentResponse.from_model(item) for item in segments],
+            short_clip_path=candidate.short_clip_path,
+            short_clip_error=meta.get("short_clip_error"),
+            preview_clip_path=editor_meta.get("preview_clip_path"),
+            preview_clip_error=editor_meta.get("preview_clip_error"),
+            render_config=editor_meta.get("render_config") or {},
+            has_edited_ass=bool(editor_meta.get("edited_ass_path")),
         )
 
 
@@ -280,6 +299,60 @@ class CandidateSelectionRequest(BaseModel):
 
 class CandidateRejectRequest(BaseModel):
     reason: str
+
+
+class ShortClipSubtitleStyle(BaseModel):
+    """libass 번인 스타일(편집기의 ‘자막 속성’에 가까운 옵션). Alignment는 ASS 규칙(2=하단 중앙)."""
+
+    font_family: str = Field(default="Noto Sans CJK KR", max_length=120)
+    font_size: int = Field(default=28, ge=10, le=80)
+    alignment: int = Field(default=2, ge=1, le=9)
+    margin_v: int = Field(default=52, ge=0, le=400)
+    outline: int = Field(default=2, ge=0, le=8)
+    primary_color: str = Field(default="#FFFFFF", max_length=16)
+    outline_color: str = Field(default="#000000", max_length=16)
+    shadow: int = Field(default=0, ge=0, le=8)
+    background_box: bool = False
+    bold: bool = False
+
+
+class ShortClipSubtitleTextOverride(BaseModel):
+    segment_id: str
+    text: str = Field(max_length=4000)
+
+
+class ShortClipRenderConfig(BaseModel):
+    trim_start: float | None = None
+    trim_end: float | None = None
+    burn_subtitles: bool = True
+    subtitle_source: Literal["none", "file", "transcript", "edited-ass"] = "file"
+    aspect_ratio: Literal["9:16", "1:1", "16:9"] = "9:16"
+    fit_mode: Literal["cover", "contain", "pad-blur"] = "contain"
+    quality_preset: Literal["draft", "standard", "high"] = "standard"
+    resolution_preset: str = "1080x1920"
+    width: int = 1080
+    height: int = 1920
+    subtitle_style: ShortClipSubtitleStyle | None = None
+    subtitle_text_overrides: list[ShortClipSubtitleTextOverride] | None = None
+    use_imported_subtitles: bool = False
+    use_edited_ass: bool = False
+
+
+class ShortClipRenderRequest(ShortClipRenderConfig):
+    """후보 구간을 프리셋 기반으로 렌더하거나 preview clip을 생성합니다."""
+
+    output_kind: Literal["final", "preview"] = "final"
+    edited_ass: str | None = Field(default=None, max_length=200_000)
+    save_config: bool = True
+
+
+class EditedAssPayload(BaseModel):
+    content: str = Field(default="", max_length=200_000)
+
+
+class EditedAssResponse(BaseModel):
+    content: str
+    has_content: bool = False
 
 
 class ScriptDraftCreateRequest(BaseModel):
@@ -417,6 +490,10 @@ class VideoDraftPatchRequest(BaseModel):
     render_config: dict[str, Any] | None = None
 
 
+class VideoDraftRejectRequest(BaseModel):
+    reason: str | None = None
+
+
 class ExportCreateRequest(BaseModel):
     export_preset: str = "shorts_default"
     include_srt: bool = True
@@ -450,5 +527,3 @@ class ExportDetailResponse(BaseModel):
             file_size_bytes=exp.file_size_bytes,
             metadata=exp.metadata_json or {},
         )
-
-

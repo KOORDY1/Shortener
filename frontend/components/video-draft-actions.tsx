@@ -15,7 +15,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
   });
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    throw new Error(`요청 실패 (${response.status})`);
   }
   return response.json() as Promise<T>;
 }
@@ -27,10 +27,14 @@ type Props = {
 export function VideoDraftActions({ draft }: Props) {
   const router = useRouter();
   const [notes, setNotes] = useState(draft.operator_notes ?? "");
+  const [rejectReason, setRejectReason] = useState("");
   const [saving, setSaving] = useState(false);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [lastExport, setLastExport] = useState<ExportDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const isRejected = draft.status === "rejected";
 
   async function onSaveNotes(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,6 +50,49 @@ export function VideoDraftActions({ draft }: Props) {
       setError(e instanceof Error ? e.message : "저장 실패");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onRerender() {
+    setActionBusy("rerender");
+    setError(null);
+    try {
+      await request(`/video-drafts/${draft.id}/rerender`, { method: "POST", body: "{}" });
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "재렌더 실패");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function onApprove() {
+    setActionBusy("approve");
+    setError(null);
+    try {
+      await request(`/video-drafts/${draft.id}/approve`, { method: "POST", body: "{}" });
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "승인 실패");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function onReject() {
+    setActionBusy("reject");
+    setError(null);
+    try {
+      await request(`/video-drafts/${draft.id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ reason: rejectReason.trim() || null })
+      });
+      setRejectReason("");
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "거절 실패");
+    } finally {
+      setActionBusy(null);
     }
   }
 
@@ -95,18 +142,58 @@ export function VideoDraftActions({ draft }: Props) {
           {saving ? "저장 중…" : "메모 저장"}
         </button>
       </form>
+      <div className="row wrap">
+        <button
+          className="button ghost"
+          type="button"
+          disabled={!!actionBusy || isRejected}
+          onClick={onRerender}
+        >
+          {actionBusy === "rerender" ? "재렌더 중…" : "샘플 재렌더"}
+        </button>
+        <button
+          className="button ghost"
+          type="button"
+          disabled={!!actionBusy || draft.status === "approved"}
+          onClick={onApprove}
+        >
+          {actionBusy === "approve" ? "처리 중…" : "승인"}
+        </button>
+      </div>
+      <div className="stack">
+        <div className="field">
+          <label>거절 사유(선택)</label>
+          <input
+            className="input"
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="짧게 입력"
+          />
+        </div>
+        <button
+          className="button danger"
+          type="button"
+          disabled={!!actionBusy || isRejected}
+          onClick={onReject}
+        >
+          {actionBusy === "reject" ? "처리 중…" : "거절"}
+        </button>
+      </div>
       <div className="row">
         <button className="button" type="button" disabled={exporting} onClick={onExport}>
-          {exporting ? "보내는 중…" : "Mock보내기"}
+          {exporting ? "보내는 중…" : "샘플 보내기"}
         </button>
       </div>
       {lastExport ? (
-        <div className="panel">
+        <div className="panel stack">
           <p className="muted tiny">보내기 ID: {lastExport.id}</p>
           <p className="muted tiny">상태: {lastExport.status}</p>
           {lastExport.export_video_path ? (
             <p className="muted tiny path">{lastExport.export_video_path}</p>
           ) : null}
+          <Link href={`/exports/${lastExport.id}`} className="link-button">
+            보내기 상세
+          </Link>
         </div>
       ) : null}
       <Link href={`/candidates/${draft.candidate_id}`} className="link-button">

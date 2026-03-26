@@ -39,7 +39,9 @@ def clean_json_text(raw_text: str) -> str:
     return stripped.strip()
 
 
-def fallback_drafts(candidate: Candidate, language: str, versions: int, channel_style: str) -> list[dict[str, Any]]:
+def fallback_drafts(
+    candidate: Candidate, language: str, versions: int, channel_style: str
+) -> list[dict[str, Any]]:
     drafts: list[dict[str, Any]] = []
     for index in range(versions):
         hook = (
@@ -65,7 +67,9 @@ def fallback_drafts(candidate: Candidate, language: str, versions: int, channel_
                 "title_options": [
                     candidate.title_hint,
                     f"{candidate.title_hint} version {index + 1}",
-                    "The line that changes the whole scene" if language == "en" else "한마디로 분위기가 바뀌는 장면",
+                    "The line that changes the whole scene"
+                    if language == "en"
+                    else "한마디로 분위기가 바뀌는 장면",
                 ],
             }
         )
@@ -187,7 +191,9 @@ def generate_script_drafts_for_candidate(
         hook_text = str(source.get("hook", candidate.title_hint)).strip()
         body_text = str(source.get("body", "")).strip() or candidate.title_hint
         cta_text = str(source.get("cta", "")).strip() or "Check the next candidate."
-        title_options = [str(item).strip() for item in source.get("title_options", []) if str(item).strip()]
+        title_options = [
+            str(item).strip() for item in source.get("title_options", []) if str(item).strip()
+        ]
         full_script_text = " ".join(part for part in [hook_text, body_text, cta_text] if part)
         estimated_duration_seconds = round(max(15.0, len(full_script_text) / 12), 2)
         draft = ScriptDraft(

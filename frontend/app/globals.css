@@ -373,6 +373,13 @@ body {
   word-break: break-all;
 }
 
+.source-video {
+  width: 100%;
+  max-height: min(70vh, 720px);
+  border-radius: 8px;
+  background: #000;
+}
+
 @media (max-width: 900px) {
   .grid.two,
   .grid.three {

@@ -4,7 +4,11 @@ import Link from "next/link";
 import { Episode } from "@/lib/types";
 import { formatDuration, formatEpisodeLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
-import { AnalyzeEpisodeButton } from "@/components/mutation-buttons";
+import {
+  AnalyzeEpisodeButton,
+  ClearEpisodeAnalysisButton,
+  DeleteEpisodeButton
+} from "@/components/mutation-buttons";
 
 type Props = {
   episodes: Episode[];
@@ -16,12 +20,12 @@ export function EpisodeTable({ episodes }: Props) {
       <table className="table">
         <thead>
           <tr>
-            <th>Show</th>
-            <th>S/E</th>
-            <th>Target</th>
-            <th>Status</th>
-            <th>Duration</th>
-            <th>Actions</th>
+            <th>작품</th>
+            <th>시즌/회</th>
+            <th>채널</th>
+            <th>상태</th>
+            <th>길이</th>
+            <th>동작</th>
           </tr>
         </thead>
         <tbody>
@@ -30,7 +34,7 @@ export function EpisodeTable({ episodes }: Props) {
               <td>
                 <div className="stack">
                   <strong>{episode.show_title}</strong>
-                  <span className="muted">{episode.episode_title ?? "Untitled episode"}</span>
+                  <span className="muted">{episode.episode_title ?? "제목 없음"}</span>
                 </div>
               </td>
               <td>{formatEpisodeLabel(episode.season_number, episode.episode_number)}</td>
@@ -40,14 +44,16 @@ export function EpisodeTable({ episodes }: Props) {
               </td>
               <td>{formatDuration(episode.duration_seconds)}</td>
               <td>
-                <div className="row">
+                <div className="row wrap">
                   <Link href={`/episodes/${episode.id}`} className="link-button">
-                    Open
+                    상세
                   </Link>
                   <Link href={`/episodes/${episode.id}/candidates`} className="link-button">
-                    Candidates
+                    후보
                   </Link>
                   <AnalyzeEpisodeButton episodeId={episode.id} />
+                  <ClearEpisodeAnalysisButton episodeId={episode.id} />
+                  <DeleteEpisodeButton episodeId={episode.id} />
                 </div>
               </td>
             </tr>

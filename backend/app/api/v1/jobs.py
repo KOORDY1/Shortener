@@ -21,8 +21,12 @@ def get_job(job_id: str, db: Session = Depends(get_db)) -> JobResponse:
 def list_jobs(
     episode_id: str | None = None,
     candidate_id: str | None = None,
-    job_type: str | None = Query(default=None, description="Filter by job type, e.g. analysis, script_generation"),
-    status: str | None = Query(default=None, description="Filter by status: queued, running, succeeded, failed"),
+    job_type: str | None = Query(
+        default=None, description="Filter by job type, e.g. analysis, script_generation"
+    ),
+    status: str | None = Query(
+        default=None, description="Filter by status: queued, running, succeeded, failed"
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),

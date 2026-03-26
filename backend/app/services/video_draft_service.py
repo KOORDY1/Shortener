@@ -7,16 +7,21 @@ from app.db.models import (
     Candidate,
     Export,
     ExportStatus,
+    Job,
+    JobType,
     ScriptDraft,
     VideoDraft,
     VideoDraftStatus,
 )
+from app.services.jobs import create_job, mark_job_running, mark_job_succeeded
 from app.services.storage_service import write_placeholder
 
 
 def next_video_draft_version(db: Session, candidate_id: str) -> int:
     current = db.scalar(
-        select(func.coalesce(func.max(VideoDraft.version_no), 0)).where(VideoDraft.candidate_id == candidate_id)
+        select(func.coalesce(func.max(VideoDraft.version_no), 0)).where(
+            VideoDraft.candidate_id == candidate_id
+        )
     )
     return int(current or 0) + 1
 
@@ -88,7 +93,9 @@ def create_mock_export(
             "mock export video",
         ),
         export_subtitle_path=(
-            write_placeholder(episode_id, [*base, "final.srt"], "mock export srt") if include_srt else None
+            write_placeholder(episode_id, [*base, "final.srt"], "mock export srt")
+            if include_srt
+            else None
         ),
         export_script_path=(
             write_placeholder(episode_id, [*base, "script.txt"], "mock export script")
@@ -106,3 +113,41 @@ def create_mock_export(
     db.commit()
     db.refresh(exp)
     return exp
+
+
+def run_mock_rerender(db: Session, video_draft: VideoDraft) -> tuple[Job, VideoDraft]:
+    """Create a VIDEO_DRAFT_RENDER job and complete it immediately (no real FFmpeg)."""
+    if video_draft.status == VideoDraftStatus.REJECTED.value:
+        raise ValueError("rejected drafts cannot be rerendered")
+
+    candidate = db.get(Candidate, video_draft.candidate_id)
+    if candidate is None:
+        raise ValueError("Candidate not found for video draft")
+
+    job = create_job(
+        db,
+        job_type=JobType.VIDEO_DRAFT_RENDER.value,
+        episode_id=candidate.episode_id,
+        candidate_id=candidate.id,
+        payload={"video_draft_id": video_draft.id, "mock_rerender": True},
+    )
+    mark_job_running(db, job, step="mock_render", progress_percent=50)
+
+    video_draft.status = VideoDraftStatus.READY.value
+    video_draft.draft_video_path = write_placeholder(
+        candidate.episode_id,
+        [
+            "candidates",
+            candidate.id,
+            "video_drafts",
+            str(video_draft.version_no),
+            "draft_rerender.mp4",
+        ],
+        "mock rerender placeholder",
+    )
+    db.add(video_draft)
+    db.commit()
+    db.refresh(video_draft)
+
+    mark_job_succeeded(db, job, payload={"video_draft_id": video_draft.id})
+    return job, video_draft

@@ -1,4 +1,13 @@
-from app.db.models import Candidate, Episode, Export, Job, ScriptDraft, Shot, TranscriptSegment, VideoDraft
+from app.db.models import (
+    Candidate,
+    Episode,
+    Export,
+    Job,
+    ScriptDraft,
+    Shot,
+    TranscriptSegment,
+    VideoDraft,
+)
 from app.db.session import Base
 
 __all__ = [

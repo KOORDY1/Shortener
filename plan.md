@@ -4442,3 +4442,3013 @@ Alembic autogenerate는 편하지만, 공식 문서도 모든 변경을 전부 �
 [1]: https://docs.sqlalchemy.org/en/latest/orm/declarative_tables.html?utm_source=chatgpt.com "Table Configuration with Declarative — SQLAlchemy 2.1 ..."
 [2]: https://alembic.sqlalchemy.org/en/latest/autogenerate.html?utm_source=chatgpt.com "Auto Generating Migrations - Alembic's documentation!"
 [3]: https://alembic.sqlalchemy.org/en/latest/tutorial.html?utm_source=chatgpt.com "Tutorial — Alembic 1.18.4 documentation"
+
+
+
+좋다.
+이번 초안은 아래 전제를 깔고 간다.
+
+* 업로드는 **FastAPI `UploadFile` + form-data** 기준
+* 백그라운드 작업은 **Celery task + queue routing**
+* 저장소는 **로컬 / S3 추상화**
+* 렌더는 **ffmpeg subprocess + complex filtergraph**
+* 코드 목적은 **MVP에서 바로 붙일 수 있는 서비스 레이어 골격**이다. FastAPI는 파일 업로드에 `UploadFile`을 쓰는 패턴을 문서화하고 있고, forms/files를 함께 받을 때 `python-multipart`가 필요하다. Celery는 작업 라우팅을 설정으로 분리하는 방식을 안내하고, FFmpeg는 complex filtergraph로 다중 입력/출력 합성을 지원한다. S3 쪽은 boto3의 관리형 전송 API를 쓰는 쪽이 무난하다. ([FastAPI][1])
+
+---
+
+# 1) `app/utils/ffmpeg.py`
+
+```python
+from __future__ import annotations
+
+import json
+import shlex
+import subprocess
+from pathlib import Path
+
+
+class FFmpegError(RuntimeError):
+    pass
+
+
+def run_cmd(cmd: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result
+    except subprocess.CalledProcessError as e:
+        raise FFmpegError(
+            f"Command failed: {' '.join(shlex.quote(x) for x in cmd)}\n"
+            f"STDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}"
+        ) from e
+
+
+def probe_media(path: str | Path) -> dict:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(path),
+    ]
+    result = run_cmd(cmd)
+    return json.loads(result.stdout)
+
+
+def escape_drawtext_text(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", r"\'")
+        .replace("[", r"\[")
+        .replace("]", r"\]")
+        .replace(",", r"\,")
+    )
+
+
+def escape_filter_path(path: str | Path) -> str:
+    s = str(path)
+    return s.replace("\\", "/").replace(":", "\\:").replace("'", r"\'")
+
+
+def ensure_parent_dir(path: str | Path) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+```
+
+---
+
+# 2) `app/services/storage_service.py`
+
+```python
+from __future__ import annotations
+
+import io
+import shutil
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO
+
+import boto3
+from botocore.client import BaseClient
+from fastapi import UploadFile
+
+from app.core.config import get_settings
+
+
+@dataclass
+class StoredObject:
+    key: str
+    uri: str
+    size_bytes: int | None = None
+
+
+class StorageService(ABC):
+    @abstractmethod
+    def save_uploadfile(self, file: UploadFile, key: str) -> StoredObject:
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_bytes(self, content: bytes, key: str, content_type: str | None = None) -> StoredObject:
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_local_file(self, local_path: str | Path, key: str) -> StoredObject:
+        raise NotImplementedError
+
+    @abstractmethod
+    def download_to_local(self, key: str, local_path: str | Path) -> Path:
+        raise NotImplementedError
+
+    @abstractmethod
+    def read_bytes(self, key: str) -> bytes:
+        raise NotImplementedError
+
+    @abstractmethod
+    def exists(self, key: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_uri(self, key: str) -> str:
+        raise NotImplementedError
+
+
+class LocalStorageService(StorageService):
+    def __init__(self, root: str | Path):
+        self.root = Path(root).resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _full_path(self, key: str) -> Path:
+        path = self.root / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def save_uploadfile(self, file: UploadFile, key: str) -> StoredObject:
+        path = self._full_path(key)
+        with path.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+        return StoredObject(key=key, uri=self.build_uri(key), size_bytes=path.stat().st_size)
+
+    def save_bytes(self, content: bytes, key: str, content_type: str | None = None) -> StoredObject:
+        path = self._full_path(key)
+        path.write_bytes(content)
+        return StoredObject(key=key, uri=self.build_uri(key), size_bytes=path.stat().st_size)
+
+    def save_local_file(self, local_path: str | Path, key: str) -> StoredObject:
+        src = Path(local_path)
+        dest = self._full_path(key)
+        shutil.copy2(src, dest)
+        return StoredObject(key=key, uri=self.build_uri(key), size_bytes=dest.stat().st_size)
+
+    def download_to_local(self, key: str, local_path: str | Path) -> Path:
+        src = self.root / key
+        dest = Path(local_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        return dest
+
+    def read_bytes(self, key: str) -> bytes:
+        return (self.root / key).read_bytes()
+
+    def exists(self, key: str) -> bool:
+        return (self.root / key).exists()
+
+    def build_uri(self, key: str) -> str:
+        return str((self.root / key).resolve())
+
+
+class S3StorageService(StorageService):
+    def __init__(self, bucket: str, client: BaseClient):
+        self.bucket = bucket
+        self.client = client
+
+    def save_uploadfile(self, file: UploadFile, key: str) -> StoredObject:
+        file.file.seek(0)
+        self.client.upload_fileobj(file.file, self.bucket, key)
+        return StoredObject(key=key, uri=self.build_uri(key), size_bytes=None)
+
+    def save_bytes(self, content: bytes, key: str, content_type: str | None = None) -> StoredObject:
+        extra = {}
+        if content_type:
+            extra["ContentType"] = content_type
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=content,
+            **extra,
+        )
+        return StoredObject(key=key, uri=self.build_uri(key), size_bytes=len(content))
+
+    def save_local_file(self, local_path: str | Path, key: str) -> StoredObject:
+        self.client.upload_file(str(local_path), self.bucket, key)
+        return StoredObject(key=key, uri=self.build_uri(key), size_bytes=None)
+
+    def download_to_local(self, key: str, local_path: str | Path) -> Path:
+        dest = Path(local_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self.client.download_file(self.bucket, key, str(dest))
+        return dest
+
+    def read_bytes(self, key: str) -> bytes:
+        obj = self.client.get_object(Bucket=self.bucket, Key=key)
+        return obj["Body"].read()
+
+    def exists(self, key: str) -> bool:
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except Exception:
+            return False
+
+    def build_uri(self, key: str) -> str:
+        return f"s3://{self.bucket}/{key}"
+
+
+_storage_instance: StorageService | None = None
+
+
+def get_storage_service() -> StorageService:
+    global _storage_instance
+
+    if _storage_instance is not None:
+        return _storage_instance
+
+    settings = get_settings()
+    if settings.STORAGE_BACKEND == "s3":
+        client = boto3.client(
+            "s3",
+            region_name=settings.S3_REGION,
+            endpoint_url=settings.S3_ENDPOINT_URL,
+            aws_access_key_id=settings.S3_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
+        )
+        _storage_instance = S3StorageService(
+            bucket=settings.S3_BUCKET,
+            client=client,
+        )
+    else:
+        _storage_instance = LocalStorageService(settings.STORAGE_LOCAL_ROOT)
+
+    return _storage_instance
+
+
+def episode_storage_prefix(episode_id: str) -> str:
+    return f"episodes/{episode_id}"
+
+
+def build_episode_key(episode_id: str, *parts: str) -> str:
+    return "/".join([episode_storage_prefix(episode_id), *parts])
+
+
+def build_candidate_key(episode_id: str, candidate_id: str, *parts: str) -> str:
+    return "/".join([episode_storage_prefix(episode_id), "candidates", candidate_id, *parts])
+```
+
+---
+
+# 3) `app/services/analysis_service.py`
+
+이 버전은 **완전한 ML/비전 모델**이 아니라,
+MVP에서 바로 쓸 수 있는 **휴리스틱 기반 후보 생성기**다.
+
+```python
+from __future__ import annotations
+
+import math
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+from uuid import UUID
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from app.db.enums import CandidateStatus, CandidateType, EpisodeStatus, SourceType
+from app.db.models.candidate import Candidate
+from app.db.models.episode import Episode
+from app.db.models.shot import Shot
+from app.db.models.transcript_segment import TranscriptSegment
+from app.utils.ffmpeg import probe_media
+
+
+@dataclass
+class CandidateWindow:
+    start_time: float
+    end_time: float
+    transcript_ids: list[str]
+    shot_ids: list[str]
+    title_hint: str
+    candidate_type: CandidateType
+    score_total: float
+    score_hook: float
+    score_clarity: float
+    score_tension: float
+    score_emotion: float
+    score_commentary: float
+    score_visual: float
+    penalty_source_dependence: float
+    penalty_repetition: float
+    risk_score: float
+    risk_level: str
+    metadata: dict
+
+
+class AnalysisService:
+    TARGET_MIN_DURATION = 18.0
+    TARGET_MAX_DURATION = 35.0
+    TARGET_IDEAL_DURATION = 26.0
+
+    def hydrate_episode_metadata(self, db: Session, episode_id: UUID) -> Episode:
+        episode = db.get(Episode, episode_id)
+        if not episode:
+            raise ValueError("Episode not found")
+
+        media = probe_media(episode.source_video_path)
+        fmt = media.get("format", {})
+        video_stream = next(
+            (s for s in media.get("streams", []) if s.get("codec_type") == "video"),
+            None,
+        )
+
+        if video_stream:
+            episode.width = video_stream.get("width")
+            episode.height = video_stream.get("height")
+            fps_str = video_stream.get("r_frame_rate")
+            if fps_str and fps_str != "0/0":
+                n, d = fps_str.split("/")
+                episode.fps = round(float(n) / float(d), 3)
+
+        if fmt.get("duration"):
+            episode.duration_seconds = round(float(fmt["duration"]), 3)
+        if fmt.get("size"):
+            episode.file_size_bytes = int(fmt["size"])
+
+        db.add(episode)
+        db.commit()
+        db.refresh(episode)
+        return episode
+
+    def import_srt_segments(
+        self,
+        db: Session,
+        episode_id: UUID,
+        srt_text: str,
+        language: str,
+        source: SourceType = SourceType.subtitle,
+    ) -> int:
+        episode = db.get(Episode, episode_id)
+        if not episode:
+            raise ValueError("Episode not found")
+
+        existing = db.execute(
+            select(TranscriptSegment).where(
+                TranscriptSegment.episode_id == episode_id,
+                TranscriptSegment.source == source,
+            )
+        ).scalars().all()
+        for row in existing:
+            db.delete(row)
+        db.flush()
+
+        segments = self._parse_srt(srt_text)
+        created = 0
+        for idx, seg in enumerate(segments, start=1):
+            row = TranscriptSegment(
+                episode_id=episode_id,
+                segment_index=idx,
+                start_time=seg["start_time"],
+                end_time=seg["end_time"],
+                text=seg["text"],
+                normalized_text=self._normalize_text(seg["text"]),
+                speaker_label=None,
+                source=source,
+                confidence=1.0 if source == SourceType.subtitle else None,
+                language=language,
+                metadata_json={},
+            )
+            db.add(row)
+            created += 1
+
+        db.commit()
+        return created
+
+    def generate_candidates(
+        self,
+        db: Session,
+        episode_id: UUID,
+        max_candidates: int = 20,
+        replace_existing: bool = True,
+    ) -> list[Candidate]:
+        episode = db.get(Episode, episode_id)
+        if not episode:
+            raise ValueError("Episode not found")
+
+        shots = db.execute(
+            select(Shot)
+            .where(Shot.episode_id == episode_id)
+            .order_by(Shot.start_time.asc())
+        ).scalars().all()
+
+        segments = db.execute(
+            select(TranscriptSegment)
+            .where(TranscriptSegment.episode_id == episode_id)
+            .order_by(TranscriptSegment.start_time.asc())
+        ).scalars().all()
+
+        if not shots or not segments:
+            raise ValueError("Shots or transcript segments missing")
+
+        if replace_existing:
+            db.execute(delete(Candidate).where(Candidate.episode_id == episode_id))
+            db.flush()
+
+        windows = self._build_windows(segments, shots)
+        windows = self._dedupe_windows(windows)
+        windows = sorted(windows, key=lambda x: x.score_total, reverse=True)[:max_candidates]
+
+        created_rows: list[Candidate] = []
+        for i, window in enumerate(windows, start=1):
+            row = Candidate(
+                episode_id=episode_id,
+                candidate_index=i,
+                type=window.candidate_type,
+                status=CandidateStatus.generated,
+                title_hint=window.title_hint,
+                start_time=window.start_time,
+                end_time=window.end_time,
+                total_score=window.score_total,
+                hook_score=window.score_hook,
+                clarity_score=window.score_clarity,
+                tension_score=window.score_tension,
+                emotion_score=window.score_emotion,
+                commentary_score=window.score_commentary,
+                visual_score=window.score_visual,
+                source_dependence_penalty=window.penalty_source_dependence,
+                repetition_penalty=window.penalty_repetition,
+                risk_score=window.risk_score,
+                risk_level=window.risk_level,
+                shot_ids=window.shot_ids,
+                transcript_segment_ids=window.transcript_ids,
+                metadata_json=window.metadata,
+            )
+            db.add(row)
+            created_rows.append(row)
+
+        episode.status = EpisodeStatus.ready
+        db.add(episode)
+        db.commit()
+
+        for row in created_rows:
+            db.refresh(row)
+
+        return created_rows
+
+    def _build_windows(
+        self,
+        segments: list[TranscriptSegment],
+        shots: list[Shot],
+    ) -> list[CandidateWindow]:
+        windows: list[CandidateWindow] = []
+
+        for i in range(len(segments)):
+            current = [segments[i]]
+            start = float(segments[i].start_time)
+            end = float(segments[i].end_time)
+
+            j = i + 1
+            while j < len(segments):
+                next_end = float(segments[j].end_time)
+                if next_end - start > self.TARGET_MAX_DURATION:
+                    break
+                current.append(segments[j])
+                end = next_end
+                j += 1
+
+            duration = end - start
+            if duration < self.TARGET_MIN_DURATION:
+                continue
+
+            related_shots = [
+                s for s in shots
+                if float(s.end_time) >= start and float(s.start_time) <= end
+            ]
+            if len(related_shots) < 3:
+                continue
+
+            shot_ids = [str(s.id) for s in related_shots[:7]]
+            segment_ids = [str(s.id) for s in current]
+
+            score_hook = self._score_hook(current)
+            score_clarity = self._score_clarity(current, duration)
+            score_tension = self._score_tension(current)
+            score_emotion = self._score_emotion(related_shots, current)
+            score_commentary = self._score_commentary_potential(current)
+            score_visual = self._score_visual(related_shots)
+            penalty_source_dependence = self._score_source_dependence(duration, current)
+            penalty_repetition = 0.0
+
+            total = (
+                score_hook * 0.18
+                + score_clarity * 0.16
+                + score_tension * 0.14
+                + score_emotion * 0.13
+                + score_commentary * 0.24
+                + score_visual * 0.15
+                - penalty_source_dependence * 0.10
+                - penalty_repetition * 0.05
+            )
+
+            candidate_type = self._infer_candidate_type(current)
+            title_hint = self._make_title_hint(candidate_type, current)
+            risk_score = self._calculate_risk(duration, current, related_shots)
+            risk_level = self._risk_level(risk_score)
+
+            windows.append(
+                CandidateWindow(
+                    start_time=start,
+                    end_time=end,
+                    transcript_ids=segment_ids,
+                    shot_ids=shot_ids,
+                    title_hint=title_hint,
+                    candidate_type=candidate_type,
+                    score_total=round(total, 3),
+                    score_hook=round(score_hook, 3),
+                    score_clarity=round(score_clarity, 3),
+                    score_tension=round(score_tension, 3),
+                    score_emotion=round(score_emotion, 3),
+                    score_commentary=round(score_commentary, 3),
+                    score_visual=round(score_visual, 3),
+                    penalty_source_dependence=round(penalty_source_dependence, 3),
+                    penalty_repetition=round(penalty_repetition, 3),
+                    risk_score=round(risk_score, 3),
+                    risk_level=risk_level,
+                    metadata={
+                        "duration_seconds": round(duration, 3),
+                        "segment_count": len(current),
+                        "shot_count": len(related_shots),
+                        "texts": [seg.text for seg in current[:5]],
+                    },
+                )
+            )
+
+        return windows
+
+    def _dedupe_windows(self, windows: list[CandidateWindow]) -> list[CandidateWindow]:
+        windows = sorted(windows, key=lambda x: x.score_total, reverse=True)
+        selected: list[CandidateWindow] = []
+
+        for window in windows:
+            overlap_found = False
+            for existing in selected:
+                overlap = self._time_overlap_ratio(
+                    window.start_time,
+                    window.end_time,
+                    existing.start_time,
+                    existing.end_time,
+                )
+                if overlap >= 0.60:
+                    overlap_found = True
+                    break
+            if not overlap_found:
+                selected.append(window)
+
+        return selected
+
+    def _time_overlap_ratio(self, s1: float, e1: float, s2: float, e2: float) -> float:
+        inter = max(0.0, min(e1, e2) - max(s1, s2))
+        union = max(e1, e2) - min(s1, s2)
+        if union <= 0:
+            return 0.0
+        return inter / union
+
+    def _score_hook(self, segments: list[TranscriptSegment]) -> float:
+        text = " ".join(seg.text for seg in segments[:2])
+        score = 5.0
+        if "?" in text:
+            score += 1.3
+        if "!" in text:
+            score += 1.0
+        if re.search(r"\b(not|never|why|how|what)\b", text, re.I):
+            score += 1.0
+        if len(text) < 70:
+            score += 0.7
+        return min(score, 10.0)
+
+    def _score_clarity(self, segments: list[TranscriptSegment], duration: float) -> float:
+        seg_count = len(segments)
+        score = 7.0
+        if 20 <= duration <= 30:
+            score += 1.2
+        if 3 <= seg_count <= 8:
+            score += 1.0
+        if any(seg.speaker_label for seg in segments):
+            score += 0.4
+        return min(score, 10.0)
+
+    def _score_tension(self, segments: list[TranscriptSegment]) -> float:
+        joined = " ".join(seg.text for seg in segments)
+        score = 4.5
+        markers = ["but", "no", "wait", "stop", "don't", "can't", "why"]
+        score += min(sum(1 for m in markers if m in joined.lower()) * 0.7, 3.0)
+        if joined.count("?") >= 2:
+            score += 1.0
+        return min(score, 10.0)
+
+    def _score_emotion(self, shots: list[Shot], segments: list[TranscriptSegment]) -> float:
+        shot_emotion = sum(float(s.emotion_intensity_score or 0) for s in shots[:8])
+        punctuation = sum(seg.text.count("!") + seg.text.count("?") for seg in segments)
+        score = 4.0 + min(shot_emotion * 0.35, 4.0) + min(punctuation * 0.25, 2.0)
+        return min(score, 10.0)
+
+    def _score_commentary_potential(self, segments: list[TranscriptSegment]) -> float:
+        joined = " ".join(seg.text for seg in segments).lower()
+        score = 5.0
+        if any(k in joined for k in ["sir", "boss", "team", "meeting", "office"]):
+            score += 2.0
+        if any(k in joined for k in ["oppa", "hyung", "sunbae", "senior"]):
+            score += 3.0
+        if any(k in joined for k in ["sorry", "fine", "okay", "thanks"]):
+            score += 1.0
+        return min(score, 10.0)
+
+    def _score_visual(self, shots: list[Shot]) -> float:
+        if not shots:
+            return 0.0
+        closeup_avg = sum(float(s.closeup_score or 0) for s in shots[:8]) / min(len(shots), 8)
+        motion_avg = sum(float(s.motion_score or 0) for s in shots[:8]) / min(len(shots), 8)
+        safe_avg = sum(float(s.text_safe_area_score or 0) for s in shots[:8]) / min(len(shots), 8)
+        score = 5.0 + closeup_avg * 2.0 + safe_avg * 2.0 - min(motion_avg, 1.5)
+        return max(0.0, min(score, 10.0))
+
+    def _score_source_dependence(self, duration: float, segments: list[TranscriptSegment]) -> float:
+        penalty = 2.5
+        if duration > 30:
+            penalty += 1.0
+        if len(segments) >= 10:
+            penalty += 0.8
+        return min(penalty, 5.0)
+
+    def _infer_candidate_type(self, segments: list[TranscriptSegment]) -> CandidateType:
+        joined = " ".join(seg.text for seg in segments).lower()
+        if any(k in joined for k in ["oppa", "sunbae", "hyung", "respect", "formal"]):
+            return CandidateType.nuance_translation
+        if any(k in joined for k in ["look", "face", "silent", "pause", "..."]):
+            return CandidateType.psychology_analysis
+        return CandidateType.context_commentary
+
+    def _make_title_hint(self, candidate_type: CandidateType, segments: list[TranscriptSegment]) -> str:
+        first_text = self._shorten(" ".join(seg.text for seg in segments[:2]), 80)
+
+        if candidate_type == CandidateType.context_commentary:
+            return f"이 장면이 분위기 싸해지는 진짜 이유 - {first_text}"
+        if candidate_type == CandidateType.nuance_translation:
+            return f"자막은 맞지만 느낌은 전혀 다른 장면 - {first_text}"
+        return f"표정과 침묵이 핵심인 장면 - {first_text}"
+
+    def _calculate_risk(
+        self,
+        duration: float,
+        segments: list[TranscriptSegment],
+        shots: list[Shot],
+    ) -> float:
+        risk = 3.0
+        if duration > 28:
+            risk += 1.2
+        if len(shots) <= 3:
+            risk += 1.0
+        if len(segments) >= 9:
+            risk += 0.8
+        return min(risk, 10.0)
+
+    def _risk_level(self, risk_score: float) -> str:
+        if risk_score < 4:
+            return "low"
+        if risk_score < 7:
+            return "medium"
+        return "high"
+
+    def _shorten(self, value: str, max_len: int) -> str:
+        value = value.strip()
+        if len(value) <= max_len:
+            return value
+        return value[: max_len - 1].rstrip() + "…"
+
+    def _normalize_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    def _parse_srt(self, srt_text: str) -> list[dict]:
+        blocks = re.split(r"\n\s*\n", srt_text.strip(), flags=re.MULTILINE)
+        items: list[dict] = []
+
+        for block in blocks:
+            lines = [line.strip("\ufeff") for line in block.splitlines() if line.strip()]
+            if len(lines) < 2:
+                continue
+
+            time_line_idx = 1 if re.match(r"^\d+$", lines[0]) else 0
+            if time_line_idx >= len(lines):
+                continue
+
+            time_line = lines[time_line_idx]
+            if "-->" not in time_line:
+                continue
+
+            start_raw, end_raw = [x.strip() for x in time_line.split("-->", 1)]
+            text_lines = lines[time_line_idx + 1 :]
+            items.append(
+                {
+                    "start_time": self._srt_time_to_seconds(start_raw),
+                    "end_time": self._srt_time_to_seconds(end_raw),
+                    "text": " ".join(text_lines).strip(),
+                }
+            )
+        return items
+
+    def _srt_time_to_seconds(self, raw: str) -> float:
+        raw = raw.replace(",", ".")
+        hh, mm, ss = raw.split(":")
+        return int(hh) * 3600 + int(mm) * 60 + float(ss)
+```
+
+---
+
+# 4) `app/services/render_service.py`
+
+이 버전은 **draft 렌더 기준**이다.
+
+* 원본 가로 영상을 9:16으로 변환
+* 배경은 blur
+* foreground는 비율 유지
+* hook text를 상단에 올림
+* 선택적으로 SRT burn-in
+* 선택적으로 voiceover audio를 map
+
+```python
+from __future__ import annotations
+
+import json
+import math
+import shutil
+import tempfile
+from pathlib import Path
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.db.enums import DraftStatus, ExportStatus
+from app.db.models.candidate import Candidate
+from app.db.models.episode import Episode
+from app.db.models.export import Export
+from app.db.models.script_draft import ScriptDraft
+from app.db.models.video_draft import VideoDraft
+from app.services.storage_service import build_candidate_key, get_storage_service
+from app.utils.ffmpeg import ensure_parent_dir, escape_filter_path, run_cmd
+
+
+class RenderService:
+    def __init__(self) -> None:
+        self.storage = get_storage_service()
+
+    def build_default_timeline(
+        self,
+        candidate: Candidate,
+        script_draft: ScriptDraft,
+        template_type: str,
+    ) -> dict:
+        duration = float(candidate.end_time) - float(candidate.start_time)
+
+        return {
+            "template_type": template_type,
+            "canvas": {
+                "width": 1080,
+                "height": 1920,
+                "aspect_ratio": "9:16",
+            },
+            "tracks": [
+                {
+                    "type": "video",
+                    "clips": [
+                        {
+                            "source": "episode",
+                            "start": float(candidate.start_time),
+                            "end": float(candidate.end_time),
+                            "layout": "blur_bg_center_fg",
+                        }
+                    ],
+                },
+                {
+                    "type": "hook",
+                    "items": [
+                        {
+                            "start": 0.0,
+                            "end": min(2.5, duration),
+                            "text": script_draft.hook_text,
+                        }
+                    ],
+                },
+                {
+                    "type": "captions",
+                    "items": self._make_caption_items(script_draft.full_script_text, duration),
+                },
+            ],
+        }
+
+    def create_or_update_timeline(self, db: Session, video_draft_id: UUID) -> VideoDraft:
+        video_draft = db.get(VideoDraft, video_draft_id)
+        if not video_draft:
+            raise ValueError("VideoDraft not found")
+
+        candidate = db.get(Candidate, video_draft.candidate_id)
+        script_draft = db.get(ScriptDraft, video_draft.script_draft_id)
+        if not candidate or not script_draft:
+            raise ValueError("Candidate or ScriptDraft not found")
+
+        video_draft.timeline_json = self.build_default_timeline(
+            candidate=candidate,
+            script_draft=script_draft,
+            template_type=video_draft.template_type,
+        )
+        db.add(video_draft)
+        db.commit()
+        db.refresh(video_draft)
+        return video_draft
+
+    def render_video_draft(self, db: Session, video_draft_id: UUID) -> VideoDraft:
+        video_draft = db.get(VideoDraft, video_draft_id)
+        if not video_draft:
+            raise ValueError("VideoDraft not found")
+
+        candidate = db.get(Candidate, video_draft.candidate_id)
+        script_draft = db.get(ScriptDraft, video_draft.script_draft_id)
+        if not candidate or not script_draft:
+            raise ValueError("Candidate or ScriptDraft not found")
+
+        episode = db.get(Episode, candidate.episode_id)
+        if not episode:
+            raise ValueError("Episode not found")
+
+        video_draft.status = DraftStatus.rendering
+        db.add(video_draft)
+        db.commit()
+
+        with tempfile.TemporaryDirectory(prefix="draft_render_") as td:
+            tmp_dir = Path(td)
+            source_path = tmp_dir / "source.mp4"
+            srt_path = tmp_dir / "captions.srt"
+            hook_txt_path = tmp_dir / "hook.txt"
+            output_path = tmp_dir / "draft.mp4"
+            thumb_path = tmp_dir / "thumb.jpg"
+
+            self._resolve_episode_source(episode, source_path)
+            hook_txt_path.write_text(script_draft.hook_text.strip(), encoding="utf-8")
+            srt_path.write_text(
+                self._build_srt(script_draft.full_script_text, float(candidate.end_time) - float(candidate.start_time)),
+                encoding="utf-8",
+            )
+
+            cmd = self._build_ffmpeg_draft_command(
+                input_video=source_path,
+                output_video=output_path,
+                subtitle_file=srt_path if video_draft.burned_caption else None,
+                hook_text_file=hook_txt_path,
+                clip_start=float(candidate.start_time),
+                clip_end=float(candidate.end_time),
+                voiceover_audio=self._resolve_optional_voiceover(video_draft, tmp_dir),
+            )
+            run_cmd(cmd)
+
+            run_cmd([
+                "ffmpeg",
+                "-y",
+                "-ss",
+                "00:00:01.000",
+                "-i",
+                str(output_path),
+                "-frames:v",
+                "1",
+                str(thumb_path),
+            ])
+
+            video_key = build_candidate_key(
+                str(episode.id),
+                str(candidate.id),
+                "video_drafts",
+                f"{video_draft.version_no}.mp4",
+            )
+            thumb_key = build_candidate_key(
+                str(episode.id),
+                str(candidate.id),
+                "video_drafts",
+                f"{video_draft.version_no}.jpg",
+            )
+            srt_key = build_candidate_key(
+                str(episode.id),
+                str(candidate.id),
+                "video_drafts",
+                f"{video_draft.version_no}.srt",
+            )
+
+            self.storage.save_local_file(output_path, video_key)
+            self.storage.save_local_file(thumb_path, thumb_key)
+            self.storage.save_local_file(srt_path, srt_key)
+
+            video_draft.draft_video_path = self.storage.build_uri(video_key)
+            video_draft.thumbnail_path = self.storage.build_uri(thumb_key)
+            video_draft.subtitle_path = self.storage.build_uri(srt_key)
+            video_draft.status = DraftStatus.ready
+
+            db.add(video_draft)
+            db.commit()
+            db.refresh(video_draft)
+
+        return video_draft
+
+    def create_export(self, db: Session, video_draft_id: UUID, export_preset: str = "shorts_default") -> Export:
+        video_draft = db.get(VideoDraft, video_draft_id)
+        if not video_draft:
+            raise ValueError("VideoDraft not found")
+
+        row = Export(
+            video_draft_id=video_draft_id,
+            export_preset=export_preset,
+            status=ExportStatus.queued,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    def render_export(self, db: Session, export_id: UUID) -> Export:
+        export = db.get(Export, export_id)
+        if not export:
+            raise ValueError("Export not found")
+
+        video_draft = db.get(VideoDraft, export.video_draft_id)
+        if not video_draft or not video_draft.draft_video_path:
+            raise ValueError("Draft video missing")
+
+        candidate = db.get(Candidate, video_draft.candidate_id)
+        script_draft = db.get(ScriptDraft, video_draft.script_draft_id)
+        if not candidate or not script_draft:
+            raise ValueError("Candidate or ScriptDraft missing")
+
+        export.status = ExportStatus.rendering
+        db.add(export)
+        db.commit()
+
+        with tempfile.TemporaryDirectory(prefix="export_render_") as td:
+            tmp_dir = Path(td)
+            draft_local = tmp_dir / "draft.mp4"
+            script_local = tmp_dir / "script.txt"
+            metadata_local = tmp_dir / "metadata.json"
+
+            self._download_uri_to_local(video_draft.draft_video_path, draft_local)
+            script_local.write_text(script_draft.full_script_text, encoding="utf-8")
+            metadata_local.write_text(
+                json.dumps(
+                    {
+                        "candidate_id": str(candidate.id),
+                        "video_draft_id": str(video_draft.id),
+                        "template_type": video_draft.template_type,
+                        "title_options": script_draft.title_options,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            export_video_key = build_candidate_key(
+                str(candidate.episode_id),
+                str(candidate.id),
+                "exports",
+                str(export.id),
+                "final.mp4",
+            )
+            export_script_key = build_candidate_key(
+                str(candidate.episode_id),
+                str(candidate.id),
+                "exports",
+                str(export.id),
+                "script.txt",
+            )
+            export_metadata_key = build_candidate_key(
+                str(candidate.episode_id),
+                str(candidate.id),
+                "exports",
+                str(export.id),
+                "metadata.json",
+            )
+
+            self.storage.save_local_file(draft_local, export_video_key)
+            self.storage.save_local_file(script_local, export_script_key)
+            self.storage.save_local_file(metadata_local, export_metadata_key)
+
+            export.export_video_path = self.storage.build_uri(export_video_key)
+            export.export_script_path = self.storage.build_uri(export_script_key)
+            export.export_metadata_path = self.storage.build_uri(export_metadata_key)
+            export.status = ExportStatus.ready
+
+            db.add(export)
+            db.commit()
+            db.refresh(export)
+
+        return export
+
+    def _make_caption_items(self, script: str, duration_seconds: float) -> list[dict]:
+        sentences = self._split_sentences(script)
+        if not sentences:
+            return []
+
+        total_chars = sum(len(x) for x in sentences) or 1
+        items = []
+        cursor = 0.0
+
+        for sentence in sentences:
+            portion = len(sentence) / total_chars
+            seg_duration = max(1.2, round(duration_seconds * portion, 2))
+            items.append({
+                "start": round(cursor, 2),
+                "end": round(min(duration_seconds, cursor + seg_duration), 2),
+                "text": sentence,
+            })
+            cursor += seg_duration
+
+        if items:
+            items[-1]["end"] = round(duration_seconds, 2)
+        return items
+
+    def _build_srt(self, script: str, duration_seconds: float) -> str:
+        items = self._make_caption_items(script, duration_seconds)
+        blocks = []
+
+        for i, item in enumerate(items, start=1):
+            blocks.append(
+                f"{i}\n"
+                f"{self._sec_to_srt(item['start'])} --> {self._sec_to_srt(item['end'])}\n"
+                f"{item['text']}\n"
+            )
+
+        return "\n".join(blocks).strip() + "\n"
+
+    def _split_sentences(self, text: str) -> list[str]:
+        raw = [x.strip() for x in text.replace("\n", " ").split(".") if x.strip()]
+        return [x if x.endswith(("!", "?")) else x + "." for x in raw]
+
+    def _sec_to_srt(self, sec: float) -> str:
+        ms = int(round((sec - int(sec)) * 1000))
+        s = int(sec) % 60
+        m = (int(sec) // 60) % 60
+        h = int(sec) // 3600
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    def _resolve_episode_source(self, episode: Episode, local_target: Path) -> Path:
+        # local backend이면 source_video_path가 실제 파일 경로일 수 있음
+        source = Path(episode.source_video_path)
+        if source.exists():
+            shutil.copy2(source, local_target)
+            return local_target
+
+        # 아니면 storage key라고 가정
+        key = self._uri_or_path_to_key(episode.source_video_path)
+        return self.storage.download_to_local(key, local_target)
+
+    def _download_uri_to_local(self, uri_or_path: str, local_target: Path) -> Path:
+        source = Path(uri_or_path)
+        if source.exists():
+            shutil.copy2(source, local_target)
+            return local_target
+
+        key = self._uri_or_path_to_key(uri_or_path)
+        return self.storage.download_to_local(key, local_target)
+
+    def _uri_or_path_to_key(self, uri_or_path: str) -> str:
+        if uri_or_path.startswith("s3://"):
+            parts = uri_or_path.split("/", 3)
+            return parts[3]
+        return uri_or_path
+
+    def _resolve_optional_voiceover(self, video_draft: VideoDraft, tmp_dir: Path) -> Path | None:
+        voiceover_uri = (video_draft.render_config or {}).get("voiceover_audio_path")
+        if not voiceover_uri:
+            return None
+        out = tmp_dir / "voiceover.wav"
+        self._download_uri_to_local(voiceover_uri, out)
+        return out
+
+    def _build_ffmpeg_draft_command(
+        self,
+        *,
+        input_video: Path,
+        output_video: Path,
+        subtitle_file: Path | None,
+        hook_text_file: Path,
+        clip_start: float,
+        clip_end: float,
+        voiceover_audio: Path | None,
+    ) -> list[str]:
+        hook_path = escape_filter_path(hook_text_file)
+        subtitle_filter = ""
+        base_chain = (
+            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,gblur=sigma=18[bg];"
+            "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2,"
+            f"drawtext=textfile='{hook_path}':"
+            "fontcolor=white:fontsize=58:box=1:boxcolor=black@0.45:"
+            "boxborderw=18:x=(w-text_w)/2:y=120"
+        )
+
+        if subtitle_file:
+            srt_path = escape_filter_path(subtitle_file)
+            subtitle_filter = f",subtitles='{srt_path}'"
+
+        filter_complex = base_chain + subtitle_filter + "[vout]"
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{clip_start:.3f}",
+            "-to",
+            f"{clip_end:.3f}",
+            "-i",
+            str(input_video),
+        ]
+
+        if voiceover_audio:
+            cmd += ["-i", str(voiceover_audio)]
+
+        cmd += [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[vout]",
+        ]
+
+        if voiceover_audio:
+            cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"]
+        else:
+            cmd += ["-an"]
+
+        cmd += [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_video),
+        ]
+        return cmd
+```
+
+---
+
+# 5) Celery task 연결 예시
+
+서비스만 만들면 끝이 아니라, 실제로는 task에서 상태를 바꿔줘야 한다.
+아래 정도면 MVP 연결이 가능하다.
+
+## `app/tasks/analysis_tasks.py`
+
+```python
+from __future__ import annotations
+
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.core.celery_app import celery_app
+from app.core.db import SessionLocal
+from app.db.enums import EpisodeStatus, JobStatus, JobType
+from app.db.models.episode import Episode
+from app.db.models.job import Job
+from app.services.analysis_service import AnalysisService
+
+
+def _create_job(db: Session, *, episode_id: str, job_type: JobType) -> Job:
+    job = Job(
+        episode_id=episode_id,
+        type=job_type,
+        status=JobStatus.running,
+        progress_percent=0,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@celery_app.task(name="app.tasks.analysis_tasks.hydrate_episode_metadata")
+def hydrate_episode_metadata_task(episode_id: str) -> dict:
+    db = SessionLocal()
+    service = AnalysisService()
+    try:
+        episode = db.get(Episode, UUID(episode_id))
+        if not episode:
+            raise ValueError("Episode not found")
+
+        episode.status = EpisodeStatus.processing
+        db.add(episode)
+        db.commit()
+
+        job = _create_job(db, episode_id=episode_id, job_type=JobType.ingest)
+        service.hydrate_episode_metadata(db, UUID(episode_id))
+
+        job.progress_percent = 100
+        job.status = JobStatus.succeeded
+        db.add(job)
+        db.commit()
+
+        return {"episode_id": episode_id}
+    except Exception as e:
+        episode = db.get(Episode, UUID(episode_id))
+        if episode:
+            episode.status = EpisodeStatus.failed
+            episode.error_message = str(e)
+            db.add(episode)
+            db.commit()
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.analysis_tasks.generate_candidates")
+def generate_candidates_task(episode_id: str, max_candidates: int = 20) -> dict:
+    db = SessionLocal()
+    service = AnalysisService()
+    try:
+        job = _create_job(db, episode_id=episode_id, job_type=JobType.candidate_generation)
+        rows = service.generate_candidates(db, UUID(episode_id), max_candidates=max_candidates)
+
+        job.progress_percent = 100
+        job.status = JobStatus.succeeded
+        job.output_payload = {"candidate_count": len(rows)}
+        db.add(job)
+        db.commit()
+
+        return {"episode_id": episode_id, "candidate_count": len(rows)}
+    except Exception as e:
+        raise
+    finally:
+        db.close()
+```
+
+---
+
+## `app/tasks/render_tasks.py`
+
+```python
+from __future__ import annotations
+
+from uuid import UUID
+
+from app.core.celery_app import celery_app
+from app.core.db import SessionLocal
+from app.db.enums import JobStatus, JobType
+from app.db.models.job import Job
+from app.services.render_service import RenderService
+
+
+def _create_job(db, *, video_draft_id: str | None = None, export_id: str | None = None, job_type: JobType) -> Job:
+    job = Job(
+        video_draft_id=video_draft_id,
+        export_id=export_id,
+        type=job_type,
+        status=JobStatus.running,
+        progress_percent=0,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@celery_app.task(name="app.tasks.render_tasks.build_timeline")
+def build_timeline_task(video_draft_id: str) -> dict:
+    db = SessionLocal()
+    service = RenderService()
+    try:
+        service.create_or_update_timeline(db, UUID(video_draft_id))
+        return {"video_draft_id": video_draft_id}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.render_tasks.render_video_draft")
+def render_video_draft_task(video_draft_id: str) -> dict:
+    db = SessionLocal()
+    service = RenderService()
+    try:
+        job = _create_job(db, video_draft_id=video_draft_id, job_type=JobType.draft_render)
+        draft = service.render_video_draft(db, UUID(video_draft_id))
+
+        job.progress_percent = 100
+        job.status = JobStatus.succeeded
+        job.output_payload = {"draft_video_path": draft.draft_video_path}
+        db.add(job)
+        db.commit()
+
+        return {"video_draft_id": video_draft_id, "status": draft.status.value}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.render_tasks.render_export")
+def render_export_task(export_id: str) -> dict:
+    db = SessionLocal()
+    service = RenderService()
+    try:
+        job = _create_job(db, export_id=export_id, job_type=JobType.export_render)
+        export = service.render_export(db, UUID(export_id))
+
+        job.progress_percent = 100
+        job.status = JobStatus.succeeded
+        job.output_payload = {"export_video_path": export.export_video_path}
+        db.add(job)
+        db.commit()
+
+        return {"export_id": export_id, "status": export.status.value}
+    finally:
+        db.close()
+```
+
+---
+
+# 6) 지금 코드에서 바로 손봐야 하는 부분
+
+이 초안은 **작동 골격**은 잡혀 있지만, 아래는 바로 보강해야 한다.
+
+### 1. `Episode.source_video_path` 의미 통일
+
+지금은
+
+* 로컬 절대경로일 수도 있고
+* storage key일 수도 있고
+* `s3://...` URI일 수도 있다
+
+실무에서는 하나로 통일하는 게 좋다.
+내 추천은:
+
+* DB에는 **항상 storage key만 저장**
+* UI에서만 필요하면 presigned URL / local URL 변환
+
+### 2. `Job.created_at`
+
+앞서 모델 초안에서 `Job.created_at`은 mixin 없이 별도 선언이라 `server_default=now()`가 들어가야 안정적이다.
+지금 마이그레이션에는 들어가 있으니, 모델도 동일하게 맞춰주는 게 좋다.
+
+### 3. subtitle burn-in
+
+`subtitles=` 필터는 환경에 따라 `libass` 의존이 있다.
+배포 환경 ffmpeg 빌드에서 subtitles 필터가 활성화되어 있는지 확인해야 한다. ffmpeg의 필터 그래프 구성 자체는 공식 문서에 나와 있다. ([FFmpeg][2])
+
+### 4. voiceover
+
+현재는 `render_config["voiceover_audio_path"]`가 있을 때만 별도 오디오를 쓴다.
+즉 다음 단계에서 필요한 건:
+
+* `tts_service.py`
+* `generate_voiceover_task`
+* `video_draft.render_config`에 결과 경로 반영
+
+### 5. 후보 생성 로직
+
+지금 `AnalysisService`는 **휴리스틱 1차 버전**이다.
+나중에는 아래를 붙이면 훨씬 좋아진다.
+
+* 화자 전환 점수
+* 얼굴 클로즈업 검출
+* 침묵/정적 구간 검출
+* 감정 변화 곡선
+* 기존 성과 데이터 기반 re-ranking
+
+---
+
+# 7) 다음으로 바로 이어붙이기 좋은 파일
+
+이제 가장 자연스러운 다음 단계는 이 3개다.
+
+* `script_service.py`
+* `tts_service.py`
+* `episodes.py / video_drafts.py` 실제 API 핸들러 보강
+
+그중 우선순위는 보통 이렇다.
+
+1. **`script_service.py`**
+2. **`tts_service.py`**
+3. **draft/editor API**
+4. **Next.js 실제 페이지 코드**
+
+이후더 해야할것.
+**`script_service.py` + `tts_service.py` + `/api/v1/episodes` `/api/v1/video-drafts` 엔드포인트 구현 초안** 
+
+
+
+
+좋다.
+이번에는 **실제로 붙여서 돌아가게 만드는 코드** 위주로 간다.
+
+중요한 전제 하나만 먼저 말하면:
+
+* 아래 `tts_service.py`의 기본 provider는 **파이프라인 테스트용 placeholder**다.
+* 즉, **실제 음성 합성**이 아니라 **길이 맞는 WAV 파일**을 만들어 전체 파이프라인이 돌게 하는 용도다.
+* 실제 운영용 음성은 나중에 **외부 TTS provider adapter**로 교체해야 한다.
+
+---
+
+# 1) 먼저 `analysis_service.py`에 이 메서드들 추가
+
+기존 `AnalysisService`에 아래 메서드를 **추가**하면 `episodes.py`에서 분석 엔드포인트를 더 자연스럽게 쓸 수 있다.
+
+```python
+# app/services/analysis_service.py 에 추가
+
+from uuid import UUID
+from sqlalchemy import select, delete
+
+from app.db.models.shot import Shot
+from app.db.models.transcript_segment import TranscriptSegment
+
+
+class AnalysisService:
+    # ... 기존 코드 유지 ...
+
+    def backfill_placeholder_shots_from_transcript(
+        self,
+        db: Session,
+        episode_id: UUID,
+        replace_existing: bool = False,
+    ) -> int:
+        """
+        실제 shot detection이 아직 없을 때,
+        transcript segment 경계를 기준으로 임시 shots를 생성.
+        """
+        if replace_existing:
+            db.execute(delete(Shot).where(Shot.episode_id == episode_id))
+            db.flush()
+
+        existing_count = db.execute(
+            select(Shot).where(Shot.episode_id == episode_id)
+        ).scalars().all()
+        if existing_count:
+            return len(existing_count)
+
+        segments = db.execute(
+            select(TranscriptSegment)
+            .where(TranscriptSegment.episode_id == episode_id)
+            .order_by(TranscriptSegment.start_time.asc())
+        ).scalars().all()
+
+        created = 0
+        for idx, seg in enumerate(segments, start=1):
+            start_time = float(seg.start_time)
+            end_time = float(seg.end_time)
+
+            if end_time <= start_time:
+                end_time = start_time + 1.2
+
+            row = Shot(
+                episode_id=episode_id,
+                shot_index=idx,
+                start_time=start_time,
+                end_time=end_time,
+                thumbnail_path=None,
+                keyframe_path=None,
+                face_count=None,
+                motion_score=0.8,
+                closeup_score=0.6,
+                emotion_intensity_score=0.7,
+                text_safe_area_score=0.8,
+                metadata_json={
+                    "placeholder": True,
+                    "source_segment_id": str(seg.id),
+                },
+            )
+            db.add(row)
+            created += 1
+
+        db.commit()
+        return created
+
+    def get_episode_timeline_payload(self, db: Session, episode_id: UUID) -> dict:
+        shots = db.execute(
+            select(Shot)
+            .where(Shot.episode_id == episode_id)
+            .order_by(Shot.start_time.asc())
+        ).scalars().all()
+
+        transcript_segments = db.execute(
+            select(TranscriptSegment)
+            .where(TranscriptSegment.episode_id == episode_id)
+            .order_by(TranscriptSegment.start_time.asc())
+        ).scalars().all()
+
+        return {
+            "episode_id": str(episode_id),
+            "shots": [
+                {
+                    "id": str(s.id),
+                    "shot_index": s.shot_index,
+                    "start_time": float(s.start_time),
+                    "end_time": float(s.end_time),
+                    "thumbnail_path": s.thumbnail_path,
+                }
+                for s in shots
+            ],
+            "transcript_segments": [
+                {
+                    "id": str(t.id),
+                    "segment_index": t.segment_index,
+                    "start_time": float(t.start_time),
+                    "end_time": float(t.end_time),
+                    "text": t.text,
+                    "speaker_label": t.speaker_label,
+                    "source": t.source.value,
+                }
+                for t in transcript_segments
+            ],
+        }
+```
+
+---
+
+# 2) `script_service.py`
+
+이 서비스는 두 가지 역할을 한다.
+
+1. 후보 장면 + transcript를 바탕으로 **스크립트 초안 생성**
+2. 여러 버전 중 하나를 **selected** 처리
+
+외부 LLM이 아직 없어도 동작하도록 **휴리스틱 fallback**을 같이 넣었다.
+
+```python
+# app/services/script_service.py
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Protocol
+from uuid import UUID
+
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session
+
+from app.db.enums import LanguageCode
+from app.db.models.candidate import Candidate
+from app.db.models.script_draft import ScriptDraft
+from app.db.models.transcript_segment import TranscriptSegment
+
+
+class LLMGenerator(Protocol):
+    def generate_script_payload(
+        self,
+        *,
+        language: str,
+        channel_style: str,
+        tone: str,
+        candidate_type: str,
+        transcript_excerpt: str,
+        title_hint: str | None,
+    ) -> dict:
+        ...
+
+
+@dataclass
+class ScriptVariant:
+    hook_text: str
+    intro_text: str | None
+    body_text: str
+    outro_text: str | None
+    cta_text: str | None
+    title_options: list[str]
+    hook_options: list[str]
+    cta_options: list[str]
+    commentary_density_score: float
+
+
+class HeuristicLLMGenerator:
+    """
+    실제 LLM provider가 없을 때 쓰는 fallback generator.
+    운영용이라기보다 개발/테스트용 초안 생성기.
+    """
+
+    def generate_script_payload(
+        self,
+        *,
+        language: str,
+        channel_style: str,
+        tone: str,
+        candidate_type: str,
+        transcript_excerpt: str,
+        title_hint: str | None,
+    ) -> dict:
+        text = transcript_excerpt.strip().replace("\n", " ")
+        short_text = text[:140] + ("..." if len(text) > 140 else "")
+
+        if language == "ko":
+            if candidate_type == "context_commentary":
+                hook = title_hint or "이 장면이 어색하게 흘러가는 진짜 이유"
+                intro = "겉으로는 평범한 대사처럼 보이지만, 실제로는 분위기가 달라집니다."
+                body = (
+                    f"핵심은 대사 자체보다 관계와 상황입니다. "
+                    f"특히 여기서는 {short_text} 같은 흐름이 나오면서, "
+                    f"상대에게 선을 긋거나 압박을 주는 뉘앙스가 생깁니다. "
+                    f"그래서 이 장면이 재밌는 건 말의 뜻보다 맥락입니다."
+                )
+                outro = "즉, 번역만 보면 약해 보이지만 실제로는 훨씬 날카로운 장면입니다."
+                cta = "다음은 이런 장면이 왜 더 무섭게 느껴지는지 보겠습니다."
+                titles = [
+                    hook,
+                    "이 장면이 싸해지는 진짜 이유",
+                    "대사보다 맥락이 더 무서운 장면",
+                ]
+            elif candidate_type == "nuance_translation":
+                hook = title_hint or "자막은 맞는데 느낌은 완전히 다른 장면"
+                intro = "이 장면은 번역만 보면 무난하지만, 실제 뉘앙스는 훨씬 차갑습니다."
+                body = (
+                    f"표현만 보면 별말 아닌 것 같아도, {short_text} 같은 흐름에서는 "
+                    f"말투와 관계가 의미를 바꿉니다. 그래서 이 장면은 직역보다 "
+                    f"어떤 감정으로 말했는지를 봐야 제대로 읽힙니다."
+                )
+                outro = "즉, 자막은 맞아도 감정은 놓치기 쉬운 장면입니다."
+                cta = "이런 뉘앙스 차이를 계속 정리해보겠습니다."
+                titles = [
+                    hook,
+                    "자막은 맞지만 감정은 틀린 장면",
+                    "번역으로는 안 잡히는 진짜 뉘앙스",
+                ]
+            else:
+                hook = title_hint or "이 장면은 표정 하나로 끝난다"
+                intro = "대사보다 반응이 더 중요한 장면입니다."
+                body = (
+                    f"실제로는 {short_text} 같은 말보다, "
+                    f"그 직후의 표정과 멈칫하는 순간이 핵심입니다. "
+                    f"그래서 이 장면은 설명보다 심리 변화로 봐야 훨씬 선명합니다."
+                )
+                outro = "즉, 이 장면은 말보다 침묵이 더 강하게 작동합니다."
+                cta = "다음은 이런 침묵이 왜 관계를 바꾸는지 보겠습니다."
+                titles = [
+                    hook,
+                    "표정 하나로 관계가 끝나는 장면",
+                    "말보다 침묵이 더 무서운 순간",
+                ]
+        else:
+            if candidate_type == "context_commentary":
+                hook = title_hint or "Why this scene suddenly feels awkward"
+                intro = "This line sounds simple, but the real meaning comes from the situation."
+                body = (
+                    f"The key here is not just the literal wording. "
+                    f"When the scene moves through lines like {short_text}, "
+                    f"the tension comes from status, timing, and how one character frames the exchange. "
+                    f"That is why the scene lands harder than the subtitle alone suggests."
+                )
+                outro = "So the real punch of this moment is context, not vocabulary."
+                cta = "Next, I’ll break down another scene where tone matters more than words."
+                titles = [
+                    hook,
+                    "This line sounds normal, but it really isn’t",
+                    "The real reason this scene feels tense",
+                ]
+            elif candidate_type == "nuance_translation":
+                hook = title_hint or "The subtitle is correct, but the emotion is not"
+                intro = "This is one of those scenes where the translation is technically fine but emotionally weaker."
+                body = (
+                    f"Once you hear a line like {short_text}, "
+                    f"you realize the real meaning depends on hierarchy, distance, and tone. "
+                    f"That is why non-native viewers often read it too softly."
+                )
+                outro = "In other words, the wording is right, but the feeling is off."
+                cta = "I’ll keep breaking down these nuance gaps in more K-drama scenes."
+                titles = [
+                    hook,
+                    "What non-Koreans usually miss in this line",
+                    "The subtitle is right, but the feeling changes",
+                ]
+            else:
+                hook = title_hint or "This scene is really about the reaction"
+                intro = "The dialogue matters less than the pause that follows it."
+                body = (
+                    f"The most important part is not the line itself, but how the character absorbs it. "
+                    f"Even with a line like {short_text}, the real story is told through hesitation, silence, and expression."
+                )
+                outro = "That is why this moment works more as psychology than dialogue."
+                cta = "Next, I’ll show another scene where silence says everything."
+                titles = [
+                    hook,
+                    "This reaction changes the whole scene",
+                    "Why the silence here matters more than the line",
+                ]
+
+        return {
+            "hook_text": hook,
+            "intro_text": intro,
+            "body_text": body,
+            "outro_text": outro,
+            "cta_text": cta,
+            "title_options": titles,
+            "hook_options": [hook, hook],
+            "cta_options": [cta] if cta else [],
+            "commentary_density_score": 8.2,
+        }
+
+
+class ScriptService:
+    def __init__(self, generator: LLMGenerator | None = None) -> None:
+        self.generator = generator or HeuristicLLMGenerator()
+
+    def generate_script_drafts(
+        self,
+        db: Session,
+        candidate_id: UUID,
+        *,
+        language: str,
+        versions: int = 2,
+        tone: str = "sharp_explanatory",
+        channel_style: str = "default",
+        force_regenerate: bool = False,
+    ) -> list[ScriptDraft]:
+        candidate = db.get(Candidate, candidate_id)
+        if not candidate:
+            raise ValueError("Candidate not found")
+
+        if force_regenerate:
+            existing = db.execute(
+                select(ScriptDraft).where(ScriptDraft.candidate_id == candidate_id)
+            ).scalars().all()
+            for row in existing:
+                db.delete(row)
+            db.flush()
+
+        existing_count = db.execute(
+            select(func.count(ScriptDraft.id)).where(ScriptDraft.candidate_id == candidate_id)
+        ).scalar_one()
+
+        transcript_segments = self._load_candidate_transcripts(db, candidate)
+
+        transcript_excerpt = " ".join(seg.text for seg in transcript_segments[:6]).strip()
+        transcript_excerpt = transcript_excerpt[:600]
+
+        created: list[ScriptDraft] = []
+
+        for idx in range(versions):
+            payload = self.generator.generate_script_payload(
+                language=language,
+                channel_style=channel_style,
+                tone=tone,
+                candidate_type=candidate.type.value,
+                transcript_excerpt=transcript_excerpt,
+                title_hint=candidate.title_hint,
+            )
+
+            full_script = self._compose_full_script(
+                payload.get("hook_text"),
+                payload.get("intro_text"),
+                payload.get("body_text"),
+                payload.get("outro_text"),
+                payload.get("cta_text"),
+            )
+
+            draft = ScriptDraft(
+                candidate_id=candidate_id,
+                version_no=int(existing_count) + idx + 1,
+                language=LanguageCode(language),
+                hook_text=payload["hook_text"],
+                intro_text=payload.get("intro_text"),
+                body_text=payload["body_text"],
+                outro_text=payload.get("outro_text"),
+                cta_text=payload.get("cta_text"),
+                full_script_text=full_script,
+                estimated_duration_seconds=self._estimate_duration_seconds(full_script, language),
+                title_options=payload.get("title_options", []),
+                hook_options=payload.get("hook_options", []),
+                cta_options=payload.get("cta_options", []),
+                commentary_density_score=payload.get("commentary_density_score", 7.5),
+                metadata_json={
+                    "tone": tone,
+                    "channel_style": channel_style,
+                    "candidate_type": candidate.type.value,
+                },
+                is_selected=False,
+            )
+            db.add(draft)
+            created.append(draft)
+
+        db.commit()
+
+        for row in created:
+            db.refresh(row)
+
+        return created
+
+    def select_script_draft(self, db: Session, script_draft_id: UUID) -> ScriptDraft:
+        target = db.get(ScriptDraft, script_draft_id)
+        if not target:
+            raise ValueError("ScriptDraft not found")
+
+        db.execute(
+            update(ScriptDraft)
+            .where(ScriptDraft.candidate_id == target.candidate_id)
+            .values(is_selected=False)
+        )
+        target.is_selected = True
+        db.add(target)
+        db.commit()
+        db.refresh(target)
+        return target
+
+    def update_script_draft(
+        self,
+        db: Session,
+        script_draft_id: UUID,
+        *,
+        hook_text: str | None = None,
+        intro_text: str | None = None,
+        body_text: str | None = None,
+        outro_text: str | None = None,
+        cta_text: str | None = None,
+        title_options: list[str] | None = None,
+    ) -> ScriptDraft:
+        draft = db.get(ScriptDraft, script_draft_id)
+        if not draft:
+            raise ValueError("ScriptDraft not found")
+
+        if hook_text is not None:
+            draft.hook_text = hook_text
+        if intro_text is not None:
+            draft.intro_text = intro_text
+        if body_text is not None:
+            draft.body_text = body_text
+        if outro_text is not None:
+            draft.outro_text = outro_text
+        if cta_text is not None:
+            draft.cta_text = cta_text
+        if title_options is not None:
+            draft.title_options = title_options
+
+        draft.full_script_text = self._compose_full_script(
+            draft.hook_text,
+            draft.intro_text,
+            draft.body_text,
+            draft.outro_text,
+            draft.cta_text,
+        )
+        draft.estimated_duration_seconds = self._estimate_duration_seconds(
+            draft.full_script_text,
+            draft.language.value,
+        )
+
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return draft
+
+    def get_selected_or_latest_script_draft(
+        self,
+        db: Session,
+        candidate_id: UUID,
+    ) -> ScriptDraft | None:
+        selected = db.execute(
+            select(ScriptDraft)
+            .where(
+                ScriptDraft.candidate_id == candidate_id,
+                ScriptDraft.is_selected.is_(True),
+            )
+            .order_by(ScriptDraft.version_no.desc())
+        ).scalars().first()
+
+        if selected:
+            return selected
+
+        return db.execute(
+            select(ScriptDraft)
+            .where(ScriptDraft.candidate_id == candidate_id)
+            .order_by(ScriptDraft.version_no.desc())
+        ).scalars().first()
+
+    def _load_candidate_transcripts(self, db: Session, candidate: Candidate) -> list[TranscriptSegment]:
+        raw_ids = candidate.transcript_segment_ids or []
+        if not raw_ids:
+            return []
+
+        ids = [UUID(x) for x in raw_ids]
+        rows = db.execute(
+            select(TranscriptSegment)
+            .where(TranscriptSegment.id.in_(ids))
+            .order_by(TranscriptSegment.start_time.asc())
+        ).scalars().all()
+        return rows
+
+    def _compose_full_script(
+        self,
+        hook_text: str | None,
+        intro_text: str | None,
+        body_text: str | None,
+        outro_text: str | None,
+        cta_text: str | None,
+    ) -> str:
+        parts = [hook_text, intro_text, body_text, outro_text, cta_text]
+        return " ".join(part.strip() for part in parts if part and part.strip())
+
+    def _estimate_duration_seconds(self, text: str, language: str) -> float:
+        words = len(text.split())
+        if language == "ko":
+            # 한국어는 공백 토큰이 성글어서 조금 보수적으로
+            return round(max(8.0, words / 2.5), 2)
+        return round(max(8.0, words / 2.8), 2)
+```
+
+---
+
+# 3) `tts_service.py`
+
+여기 기본 provider는 **실제 음성 합성**이 아니다.
+지금은 **placeholder WAV**를 만들어 전체 파이프라인 테스트용으로 쓰게 해놨다.
+
+```python
+# app/services/tts_service.py
+
+from __future__ import annotations
+
+import math
+import struct
+import tempfile
+import wave
+from abc import ABC, abstractmethod
+from pathlib import Path
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.db.models.script_draft import ScriptDraft
+from app.db.models.video_draft import VideoDraft
+from app.services.storage_service import build_candidate_key, get_storage_service
+
+
+class TTSProvider(ABC):
+    @abstractmethod
+    def synthesize(
+        self,
+        *,
+        text: str,
+        output_path: str | Path,
+        voice_key: str | None = None,
+        language: str | None = None,
+        duration_hint_seconds: float | None = None,
+    ) -> Path:
+        raise NotImplementedError
+
+
+class PlaceholderTTSProvider(TTSProvider):
+    """
+    개발/테스트용 placeholder.
+    실제 speech synthesis가 아니라,
+    길이 맞춘 mono WAV를 생성해서 렌더 파이프라인만 검증한다.
+    """
+
+    def synthesize(
+        self,
+        *,
+        text: str,
+        output_path: str | Path,
+        voice_key: str | None = None,
+        language: str | None = None,
+        duration_hint_seconds: float | None = None,
+    ) -> Path:
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        duration = duration_hint_seconds or self._estimate_duration(text, language)
+        sample_rate = 24000
+        amplitude = 400
+
+        # 완전 무음 대신 아주 작은 톤을 섞어서 디버깅 시 "오디오 있음" 확인 가능
+        freq = 220.0
+        n_frames = int(sample_rate * duration)
+
+        with wave.open(str(out), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+
+            for i in range(n_frames):
+                t = i / sample_rate
+                # 0.15초 tone + 0.05초 silence 정도의 패턴
+                phase_window = (t % 0.20)
+                if phase_window < 0.15:
+                    sample = int(amplitude * math.sin(2 * math.pi * freq * t))
+                else:
+                    sample = 0
+                wav.writeframes(struct.pack("<h", sample))
+
+        return out
+
+    def _estimate_duration(self, text: str, language: str | None) -> float:
+        tokens = max(1, len(text.split()))
+        if language == "ko":
+            return max(8.0, tokens / 2.6)
+        return max(8.0, tokens / 2.9)
+
+
+class TTSService:
+    def __init__(self, provider: TTSProvider | None = None) -> None:
+        self.provider = provider or PlaceholderTTSProvider()
+        self.storage = get_storage_service()
+
+    def synthesize_for_video_draft(self, db: Session, video_draft_id: UUID) -> VideoDraft:
+        video_draft = db.get(VideoDraft, video_draft_id)
+        if not video_draft:
+            raise ValueError("VideoDraft not found")
+
+        script_draft = db.get(ScriptDraft, video_draft.script_draft_id)
+        if not script_draft:
+            raise ValueError("ScriptDraft not found")
+
+        with tempfile.TemporaryDirectory(prefix="tts_") as td:
+            tmp_dir = Path(td)
+            local_audio = tmp_dir / "voiceover.wav"
+
+            self.provider.synthesize(
+                text=script_draft.full_script_text,
+                output_path=local_audio,
+                voice_key=video_draft.tts_voice_key,
+                language=script_draft.language.value,
+                duration_hint_seconds=float(script_draft.estimated_duration_seconds or 0) or None,
+            )
+
+            key = build_candidate_key(
+                str(video_draft.candidate_id),
+                str(video_draft.candidate_id),
+                "video_drafts",
+                f"{video_draft.version_no}_voiceover.wav",
+            )
+            # build_candidate_key(episode_id, candidate_id, ...) 형식이라
+            # 실제로는 아래 helper를 따로 두는 게 더 맞지만,
+            # 여기서는 render_config 경로만 저장하는 목적의 최소 초안이다.
+            # 안전하게 candidate_id를 episode_id 위치에 임시로 두지 않으려면
+            # 아래 별도 key builder 사용 권장:
+            # f"episodes/{episode_id}/candidates/{candidate_id}/video_drafts/{version}_voiceover.wav"
+
+            proper_key = f"video_drafts/{video_draft.id}/voiceover.wav"
+            self.storage.save_local_file(local_audio, proper_key)
+
+            config = dict(video_draft.render_config or {})
+            config["voiceover_audio_path"] = self.storage.build_uri(proper_key)
+            video_draft.render_config = config
+
+            db.add(video_draft)
+            db.commit()
+            db.refresh(video_draft)
+
+        return video_draft
+```
+
+---
+
+# 4) `schemas/script_draft.py`
+
+```python
+# app/schemas/script_draft.py
+
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+
+class ScriptDraftGenerateRequest(BaseModel):
+    language: str
+    versions: int = 2
+    tone: str = "sharp_explanatory"
+    channel_style: str = "default"
+    force_regenerate: bool = False
+
+
+class ScriptDraftUpdateRequest(BaseModel):
+    hook_text: str | None = None
+    intro_text: str | None = None
+    body_text: str | None = None
+    outro_text: str | None = None
+    cta_text: str | None = None
+    title_options: list[str] | None = None
+
+
+class ScriptDraftOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    version_no: int
+    language: str
+    hook_text: str
+    intro_text: str | None = None
+    body_text: str
+    outro_text: str | None = None
+    cta_text: str | None = None
+    full_script_text: str
+    estimated_duration_seconds: float | None = None
+    title_options: list[str]
+    hook_options: list[str]
+    cta_options: list[str]
+    commentary_density_score: float
+    is_selected: bool
+    created_at: datetime
+    updated_at: datetime
+```
+
+---
+
+# 5) `schemas/video_draft.py`
+
+```python
+# app/schemas/video_draft.py
+
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+
+class VideoDraftCreateRequest(BaseModel):
+    candidate_id: UUID
+    script_draft_id: UUID | None = None
+    template_type: str = "context_commentary_v1"
+    tts_voice_key: str | None = None
+    burned_caption: bool = True
+    auto_render: bool = False
+
+
+class VideoDraftUpdateRequest(BaseModel):
+    operator_notes: str | None = None
+    timeline_json: dict | None = None
+    render_config: dict | None = None
+    template_type: str | None = None
+    tts_voice_key: str | None = None
+    burned_caption: bool | None = None
+
+
+class VideoDraftOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    script_draft_id: UUID
+    version_no: int
+    status: str
+    template_type: str
+    tts_voice_key: str | None = None
+    aspect_ratio: str
+    width: int
+    height: int
+    draft_video_path: str | None = None
+    subtitle_path: str | None = None
+    thumbnail_path: str | None = None
+    burned_caption: bool
+    render_config: dict
+    timeline_json: dict
+    operator_notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExportCreateRequest(BaseModel):
+    export_preset: str = "shorts_default"
+    include_srt: bool = True
+    include_script_txt: bool = True
+    include_metadata_json: bool = True
+```
+
+---
+
+# 6) `api/v1/episodes.py`
+
+이 버전은 다음을 지원한다.
+
+* 업로드
+* 목록 조회
+* 상세 조회
+* 분석 시작
+* timeline 조회
+* jobs 조회
+
+```python
+# app/api/v1/episodes.py
+
+from __future__ import annotations
+
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_db
+from app.db.enums import EpisodeStatus, SourceType
+from app.db.models.episode import Episode
+from app.db.models.job import Job
+from app.schemas.episode import EpisodeOut
+from app.services.analysis_service import AnalysisService
+from app.services.storage_service import build_episode_key, get_storage_service
+from app.tasks.analysis_tasks import generate_candidates_task
+
+router = APIRouter()
+
+
+@router.post("", response_model=EpisodeOut, status_code=status.HTTP_201_CREATED)
+def create_episode(
+    show_title: str = Form(...),
+    season_number: int | None = Form(None),
+    episode_number: int | None = Form(None),
+    episode_title: str | None = Form(None),
+    original_language: str = Form(...),
+    target_channel: str = Form(...),
+    video_file: UploadFile = File(...),
+    subtitle_file: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+):
+    storage = get_storage_service()
+    service = AnalysisService()
+
+    episode_id = uuid4()
+
+    video_suffix = video_file.filename.split(".")[-1] if "." in video_file.filename else "mp4"
+    video_key = build_episode_key(str(episode_id), "source", f"source.{video_suffix}")
+    video_obj = storage.save_uploadfile(video_file, video_key)
+
+    subtitle_path = None
+    subtitle_text = None
+
+    if subtitle_file:
+        subtitle_suffix = subtitle_file.filename.split(".")[-1] if "." in subtitle_file.filename else "srt"
+        subtitle_key = build_episode_key(str(episode_id), "source", f"source.{subtitle_suffix}")
+        subtitle_obj = storage.save_uploadfile(subtitle_file, subtitle_key)
+        subtitle_path = subtitle_obj.uri
+
+        raw_bytes = storage.read_bytes(subtitle_key)
+        try:
+            subtitle_text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            subtitle_text = raw_bytes.decode("utf-8-sig", errors="ignore")
+
+    episode = Episode(
+        id=episode_id,
+        show_title=show_title,
+        season_number=season_number,
+        episode_number=episode_number,
+        episode_title=episode_title,
+        original_language=original_language,
+        target_channel=target_channel,
+        source_video_path=video_obj.uri,
+        source_subtitle_path=subtitle_path,
+        status=EpisodeStatus.uploaded,
+        metadata_json={},
+    )
+    db.add(episode)
+    db.commit()
+    db.refresh(episode)
+
+    if subtitle_text:
+        service.import_srt_segments(
+            db,
+            episode_id=episode.id,
+            srt_text=subtitle_text,
+            language=original_language,
+            source=SourceType.subtitle,
+        )
+
+    return episode
+
+
+@router.get("", response_model=list[EpisodeOut])
+def list_episodes(
+    status_filter: str | None = Query(None, alias="status"),
+    show_title: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    stmt = select(Episode).order_by(Episode.created_at.desc())
+
+    if status_filter:
+        stmt = stmt.where(Episode.status == status_filter)
+    if show_title:
+        stmt = stmt.where(Episode.show_title.ilike(f"%{show_title}%"))
+
+    rows = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
+    return rows
+
+
+@router.get("/{episode_id}", response_model=EpisodeOut)
+def get_episode(
+    episode_id: UUID,
+    db: Session = Depends(get_db),
+):
+    episode = db.get(Episode, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    return episode
+
+
+@router.post("/{episode_id}/analyze")
+def analyze_episode(
+    episode_id: UUID,
+    max_candidates: int = Query(20, ge=1, le=50),
+    force_reanalyze: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    episode = db.get(Episode, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    service = AnalysisService()
+
+    try:
+        episode.status = EpisodeStatus.processing
+        db.add(episode)
+        db.commit()
+
+        service.hydrate_episode_metadata(db, episode_id)
+
+        # MVP에서는 실제 shot detection 대신 transcript 기반 placeholder shot 생성
+        service.backfill_placeholder_shots_from_transcript(
+            db,
+            episode_id=episode_id,
+            replace_existing=force_reanalyze,
+        )
+
+        async_result = generate_candidates_task.delay(str(episode_id), max_candidates=max_candidates)
+
+        return {
+            "episode_id": str(episode_id),
+            "status": "queued",
+            "celery_task_id": async_result.id,
+            "message": "Candidate generation queued",
+        }
+    except Exception as e:
+        episode.status = EpisodeStatus.failed
+        episode.error_message = str(e)
+        db.add(episode)
+        db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{episode_id}/timeline")
+def get_episode_timeline(
+    episode_id: UUID,
+    db: Session = Depends(get_db),
+):
+    episode = db.get(Episode, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    service = AnalysisService()
+    return service.get_episode_timeline_payload(db, episode_id)
+
+
+@router.get("/{episode_id}/jobs")
+def get_episode_jobs(
+    episode_id: UUID,
+    db: Session = Depends(get_db),
+):
+    episode = db.get(Episode, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    rows = db.execute(
+        select(Job)
+        .where(Job.episode_id == episode_id)
+        .order_by(Job.created_at.desc())
+    ).scalars().all()
+
+    return [
+        {
+            "id": str(row.id),
+            "type": row.type.value,
+            "status": row.status.value,
+            "progress_percent": row.progress_percent,
+            "celery_task_id": row.celery_task_id,
+            "error_message": row.error_message,
+            "started_at": row.started_at,
+            "finished_at": row.finished_at,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+```
+
+---
+
+# 7) `api/v1/video_drafts.py`
+
+이 버전은 다음을 지원한다.
+
+* draft 생성
+* draft 상세 조회
+* draft 수정
+* rerender
+* approve / reject
+* export 생성
+
+```python
+# app/api/v1/video_drafts.py
+
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_db
+from app.db.enums import DraftStatus
+from app.db.models.candidate import Candidate
+from app.db.models.export import Export
+from app.db.models.review_action import ReviewAction
+from app.db.models.script_draft import ScriptDraft
+from app.db.models.video_draft import VideoDraft
+from app.schemas.video_draft import (
+    ExportCreateRequest,
+    VideoDraftCreateRequest,
+    VideoDraftOut,
+    VideoDraftUpdateRequest,
+)
+from app.services.render_service import RenderService
+from app.services.script_service import ScriptService
+from app.services.tts_service import TTSService
+from app.tasks.render_tasks import render_export_task, render_video_draft_task, build_timeline_task
+
+router = APIRouter()
+
+
+@router.post("", response_model=VideoDraftOut, status_code=status.HTTP_201_CREATED)
+def create_video_draft(
+    payload: VideoDraftCreateRequest,
+    db: Session = Depends(get_db),
+):
+    candidate = db.get(Candidate, payload.candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    script_service = ScriptService()
+
+    script_draft = None
+    if payload.script_draft_id:
+        script_draft = db.get(ScriptDraft, payload.script_draft_id)
+    else:
+        script_draft = script_service.get_selected_or_latest_script_draft(db, payload.candidate_id)
+
+    if not script_draft:
+        raise HTTPException(
+            status_code=400,
+            detail="No script draft available. Generate/select a script draft first.",
+        )
+
+    max_version = db.execute(
+        select(func.coalesce(func.max(VideoDraft.version_no), 0))
+        .where(VideoDraft.candidate_id == payload.candidate_id)
+    ).scalar_one()
+
+    row = VideoDraft(
+        candidate_id=payload.candidate_id,
+        script_draft_id=script_draft.id,
+        version_no=int(max_version) + 1,
+        status=DraftStatus.created,
+        template_type=payload.template_type,
+        tts_voice_key=payload.tts_voice_key,
+        burned_caption=payload.burned_caption,
+        render_config={},
+        timeline_json={},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    if payload.auto_render:
+        tts_service = TTSService()
+        render_service = RenderService()
+        tts_service.synthesize_for_video_draft(db, row.id)
+        render_service.create_or_update_timeline(db, row.id)
+        render_video_draft_task.delay(str(row.id))
+
+    return row
+
+
+@router.get("/{video_draft_id}", response_model=VideoDraftOut)
+def get_video_draft(
+    video_draft_id: UUID,
+    db: Session = Depends(get_db),
+):
+    row = db.get(VideoDraft, video_draft_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="VideoDraft not found")
+    return row
+
+
+@router.patch("/{video_draft_id}", response_model=VideoDraftOut)
+def update_video_draft(
+    video_draft_id: UUID,
+    payload: VideoDraftUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    row = db.get(VideoDraft, video_draft_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="VideoDraft not found")
+
+    if payload.operator_notes is not None:
+        row.operator_notes = payload.operator_notes
+    if payload.timeline_json is not None:
+        row.timeline_json = payload.timeline_json
+    if payload.render_config is not None:
+        row.render_config = payload.render_config
+    if payload.template_type is not None:
+        row.template_type = payload.template_type
+    if payload.tts_voice_key is not None:
+        row.tts_voice_key = payload.tts_voice_key
+    if payload.burned_caption is not None:
+        row.burned_caption = payload.burned_caption
+
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    review = ReviewAction(
+        video_draft_id=row.id,
+        action_type="update_video_draft",
+        action_payload=payload.model_dump(exclude_none=True),
+        note="manual patch via API",
+        created_by="operator",
+    )
+    db.add(review)
+    db.commit()
+
+    return row
+
+
+@router.post("/{video_draft_id}/rerender")
+def rerender_video_draft(
+    video_draft_id: UUID,
+    db: Session = Depends(get_db),
+):
+    row = db.get(VideoDraft, video_draft_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="VideoDraft not found")
+
+    tts_service = TTSService()
+    render_service = RenderService()
+
+    # MVP에서는 TTS를 동기 처리 후 렌더 task만 비동기로 큐잉
+    tts_service.synthesize_for_video_draft(db, row.id)
+    render_service.create_or_update_timeline(db, row.id)
+    async_result = render_video_draft_task.delay(str(row.id))
+
+    review = ReviewAction(
+        video_draft_id=row.id,
+        action_type="rerender",
+        action_payload={"celery_task_id": async_result.id},
+        note="rerender requested",
+        created_by="operator",
+    )
+    db.add(review)
+    db.commit()
+
+    return {
+        "video_draft_id": str(row.id),
+        "status": "queued",
+        "celery_task_id": async_result.id,
+    }
+
+
+@router.post("/{video_draft_id}/approve", response_model=VideoDraftOut)
+def approve_video_draft(
+    video_draft_id: UUID,
+    db: Session = Depends(get_db),
+):
+    row = db.get(VideoDraft, video_draft_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="VideoDraft not found")
+
+    row.status = DraftStatus.approved
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    review = ReviewAction(
+        video_draft_id=row.id,
+        action_type="approve",
+        action_payload={},
+        note="draft approved",
+        created_by="operator",
+    )
+    db.add(review)
+    db.commit()
+
+    return row
+
+
+@router.post("/{video_draft_id}/reject", response_model=VideoDraftOut)
+def reject_video_draft(
+    video_draft_id: UUID,
+    reason: str | None = None,
+    db: Session = Depends(get_db),
+):
+    row = db.get(VideoDraft, video_draft_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="VideoDraft not found")
+
+    row.status = DraftStatus.rejected
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    review = ReviewAction(
+        video_draft_id=row.id,
+        action_type="reject",
+        action_payload={"reason": reason} if reason else {},
+        note=reason or "draft rejected",
+        created_by="operator",
+    )
+    db.add(review)
+    db.commit()
+
+    return row
+
+
+@router.post("/{video_draft_id}/exports")
+def create_export(
+    video_draft_id: UUID,
+    payload: ExportCreateRequest,
+    db: Session = Depends(get_db),
+):
+    row = db.get(VideoDraft, video_draft_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="VideoDraft not found")
+
+    render_service = RenderService()
+    export = render_service.create_export(
+        db,
+        video_draft_id=row.id,
+        export_preset=payload.export_preset,
+    )
+    async_result = render_export_task.delay(str(export.id))
+
+    review = ReviewAction(
+        video_draft_id=row.id,
+        action_type="create_export",
+        action_payload={
+            "export_id": str(export.id),
+            "celery_task_id": async_result.id,
+            **payload.model_dump(),
+        },
+        note="export requested",
+        created_by="operator",
+    )
+    db.add(review)
+    db.commit()
+
+    return {
+        "export_id": str(export.id),
+        "status": "queued",
+        "celery_task_id": async_result.id,
+    }
+
+
+@router.get("/{video_draft_id}/review-actions")
+def get_review_actions(
+    video_draft_id: UUID,
+    db: Session = Depends(get_db),
+):
+    row = db.get(VideoDraft, video_draft_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="VideoDraft not found")
+
+    rows = db.execute(
+        select(ReviewAction)
+        .where(ReviewAction.video_draft_id == video_draft_id)
+        .order_by(ReviewAction.created_at.desc())
+    ).scalars().all()
+
+    return [
+        {
+            "id": str(x.id),
+            "action_type": x.action_type,
+            "action_payload": x.action_payload,
+            "note": x.note,
+            "created_by": x.created_by,
+            "created_at": x.created_at,
+        }
+        for x in rows
+    ]
+```
+
+---
+
+# 8) `api/v1/script_drafts.py`도 같이 붙이는 게 맞다
+
+네가 방금 요청한 건 episodes / video_drafts 중심이었지만,
+실제로는 **script 생성 API가 먼저 있어야 draft 생성이 자연스럽다.**
+
+그래서 최소 구현을 같이 붙인다.
+
+```python
+# app/api/v1/script_drafts.py
+
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_db
+from app.db.models.candidate import Candidate
+from app.db.models.script_draft import ScriptDraft
+from app.schemas.script_draft import (
+    ScriptDraftGenerateRequest,
+    ScriptDraftOut,
+    ScriptDraftUpdateRequest,
+)
+from app.services.script_service import ScriptService
+
+router = APIRouter()
+
+
+@router.post("/generate/{candidate_id}", response_model=list[ScriptDraftOut])
+def generate_script_drafts(
+    candidate_id: UUID,
+    payload: ScriptDraftGenerateRequest,
+    db: Session = Depends(get_db),
+):
+    candidate = db.get(Candidate, candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    service = ScriptService()
+    rows = service.generate_script_drafts(
+        db,
+        candidate_id=candidate_id,
+        language=payload.language,
+        versions=payload.versions,
+        tone=payload.tone,
+        channel_style=payload.channel_style,
+        force_regenerate=payload.force_regenerate,
+    )
+    return rows
+
+
+@router.get("/candidate/{candidate_id}", response_model=list[ScriptDraftOut])
+def list_script_drafts(
+    candidate_id: UUID,
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        select(ScriptDraft)
+        .where(ScriptDraft.candidate_id == candidate_id)
+        .order_by(ScriptDraft.version_no.asc())
+    ).scalars().all()
+    return rows
+
+
+@router.patch("/{script_draft_id}", response_model=ScriptDraftOut)
+def update_script_draft(
+    script_draft_id: UUID,
+    payload: ScriptDraftUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    service = ScriptService()
+    try:
+        return service.update_script_draft(
+            db,
+            script_draft_id=script_draft_id,
+            hook_text=payload.hook_text,
+            intro_text=payload.intro_text,
+            body_text=payload.body_text,
+            outro_text=payload.outro_text,
+            cta_text=payload.cta_text,
+            title_options=payload.title_options,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{script_draft_id}/select", response_model=ScriptDraftOut)
+def select_script_draft(
+    script_draft_id: UUID,
+    db: Session = Depends(get_db),
+):
+    service = ScriptService()
+    try:
+        return service.select_script_draft(db, script_draft_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+```
+
+---
+
+# 9) `api/router.py`에 script_drafts 라우터 추가 확인
+
+```python
+# app/api/router.py
+
+from fastapi import APIRouter
+
+from app.api.v1 import episodes, jobs, candidates, script_drafts, video_drafts, exports
+
+api_router = APIRouter()
+
+api_router.include_router(episodes.router, prefix="/v1/episodes", tags=["episodes"])
+api_router.include_router(jobs.router, prefix="/v1/jobs", tags=["jobs"])
+api_router.include_router(candidates.router, prefix="/v1/candidates", tags=["candidates"])
+api_router.include_router(script_drafts.router, prefix="/v1/script-drafts", tags=["script-drafts"])
+api_router.include_router(video_drafts.router, prefix="/v1/video-drafts", tags=["video-drafts"])
+api_router.include_router(exports.router, prefix="/v1/exports", tags=["exports"])
+```
+
+---
+
+# 10) `tasks/render_tasks.py`는 이 정도로 보강
+
+기존 코드에 `tts` 단계만 추가하는 게 좋다.
+
+```python
+# app/tasks/render_tasks.py 에 추가/수정
+
+from uuid import UUID
+
+from app.services.tts_service import TTSService
+from app.services.render_service import RenderService
+from app.core.celery_app import celery_app
+from app.core.db import SessionLocal
+from app.db.enums import JobStatus, JobType
+from app.db.models.job import Job
+
+
+def _create_job(db, *, video_draft_id: str | None = None, export_id: str | None = None, job_type: JobType) -> Job:
+    job = Job(
+        video_draft_id=video_draft_id,
+        export_id=export_id,
+        type=job_type,
+        status=JobStatus.running,
+        progress_percent=0,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@celery_app.task(name="app.tasks.render_tasks.synthesize_tts")
+def synthesize_tts_task(video_draft_id: str) -> dict:
+    db = SessionLocal()
+    service = TTSService()
+    try:
+        draft = service.synthesize_for_video_draft(db, UUID(video_draft_id))
+        return {"video_draft_id": str(draft.id)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.render_tasks.build_timeline")
+def build_timeline_task(video_draft_id: str) -> dict:
+    db = SessionLocal()
+    service = RenderService()
+    try:
+        draft = service.create_or_update_timeline(db, UUID(video_draft_id))
+        return {"video_draft_id": str(draft.id)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.render_tasks.render_video_draft")
+def render_video_draft_task(video_draft_id: str) -> dict:
+    db = SessionLocal()
+    service = RenderService()
+    try:
+        job = _create_job(db, video_draft_id=video_draft_id, job_type=JobType.draft_render)
+        draft = service.render_video_draft(db, UUID(video_draft_id))
+
+        job.progress_percent = 100
+        job.status = JobStatus.succeeded
+        job.output_payload = {"draft_video_path": draft.draft_video_path}
+        db.add(job)
+        db.commit()
+
+        return {"video_draft_id": str(draft.id), "status": draft.status.value}
+    finally:
+        db.close()
+```
+
+---
+
+# 11) 한 군데 꼭 수정해야 할 부분
+
+앞서 `tts_service.py`에서 storage key를 만들 때,
+현재 모델만으로는 `episode_id`를 직접 모르기 때문에 key가 약간 어색하다.
+
+실무적으로는 아래 중 하나가 맞다.
+
+### 방법 A
+
+`VideoDraft` 조회 시 `Candidate -> Episode` join으로 `episode_id`를 가져와 key 생성
+
+### 방법 B
+
+`video_drafts` 테이블에 `episode_id`를 **denormalized**로 넣기
+
+MVP에서는 **방법 A**가 더 낫다.
+그래서 `TTSService`를 아래처럼 조금 고쳐 쓰는 걸 권장한다.
+
+```python
+# TTSService.synthesize_for_video_draft 내부 일부 수정 예시
+
+from app.db.models.candidate import Candidate
+
+candidate = db.get(Candidate, video_draft.candidate_id)
+if not candidate:
+    raise ValueError("Candidate not found")
+
+proper_key = (
+    f"episodes/{candidate.episode_id}/"
+    f"candidates/{candidate.id}/video_drafts/{video_draft.version_no}_voiceover.wav"
+)
+```
+
+---
+
+# 12) 지금 상태에서 실제 동작 순서
+
+이제 흐름은 아래처럼 된다.
+
+### 1. episode 업로드
+
+`POST /api/v1/episodes`
+
+### 2. analyze 실행
+
+`POST /api/v1/episodes/{episode_id}/analyze`
+
+### 3. candidate 확인
+
+`GET /api/v1/episodes/{episode_id}/candidates`
+
+### 4. script drafts 생성
+
+`POST /api/v1/script-drafts/generate/{candidate_id}`
+
+### 5. script 선택
+
+`POST /api/v1/script-drafts/{script_draft_id}/select`
+
+### 6. video draft 생성
+
+`POST /api/v1/video-drafts`
+
+### 7. rerender
+
+`POST /api/v1/video-drafts/{video_draft_id}/rerender`
+
+### 8. approve
+
+`POST /api/v1/video-drafts/{video_draft_id}/approve`
+
+### 9. export
+
+`POST /api/v1/video-drafts/{video_draft_id}/exports`
+
+---
+
+# 13) 지금 바로 다음 우선순위
+
+이제 진짜 다음은 두 갈래다.
+
+### 백엔드 쪽
+
+* `candidates.py` 엔드포인트 완성
+* `exports.py` 상세 조회
+* 실제 `jobs.py` 상태 API
+* shot detection / whisper / real TTS adapter 연결
+
+### 프론트 쪽
+
+* `/episodes`
+* `/episodes/[id]`
+* `/episodes/[id]/candidates`
+* `/drafts/[id]`
+
+다음으로 가장 효율적인 건 **Next.js 실제 페이지 코드 초안**이다.

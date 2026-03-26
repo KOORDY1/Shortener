@@ -26,6 +26,11 @@ export type EpisodeListResponse = {
   total: number;
 };
 
+export type EpisodeOperationOkResponse = {
+  ok: boolean;
+  message: string;
+};
+
 export type Job = {
   id: string;
   episode_id?: string | null;
@@ -55,8 +60,6 @@ export type CandidateSummary = {
   end_time: number;
   duration_seconds: number;
   total_score: number;
-  risk_score: number;
-  risk_level: string;
 };
 
 export type CandidateListResponse = {
@@ -90,14 +93,50 @@ export type CandidateDetail = {
   end_time: number;
   duration_seconds: number;
   scores: Record<string, number>;
-  risk: {
-    risk_score: number;
-    risk_level: string;
-    reasons: string[];
-  };
   metadata: Record<string, unknown>;
   shots: Shot[];
   transcript_segments: TranscriptSegment[];
+  short_clip_path?: string | null;
+  short_clip_error?: string | null;
+  preview_clip_path?: string | null;
+  preview_clip_error?: string | null;
+  render_config?: ShortClipRenderConfig;
+  has_edited_ass?: boolean;
+};
+
+export type ShortClipSubtitleStyle = {
+  font_family: string;
+  font_size: number;
+  alignment: number;
+  margin_v: number;
+  outline: number;
+  primary_color: string;
+  outline_color: string;
+  shadow: number;
+  background_box: boolean;
+  bold: boolean;
+};
+
+export type ShortClipSubtitleOverride = {
+  segment_id: string;
+  text: string;
+};
+
+export type ShortClipRenderConfig = {
+  trim_start?: number | null;
+  trim_end?: number | null;
+  burn_subtitles: boolean;
+  subtitle_source: "none" | "file" | "transcript" | "edited-ass";
+  aspect_ratio: "9:16" | "1:1" | "16:9";
+  fit_mode: "cover" | "contain" | "pad-blur";
+  quality_preset: "draft" | "standard" | "high";
+  resolution_preset: string;
+  width: number;
+  height: number;
+  subtitle_style?: ShortClipSubtitleStyle | null;
+  subtitle_text_overrides?: ShortClipSubtitleOverride[] | null;
+  use_imported_subtitles?: boolean;
+  use_edited_ass?: boolean;
 };
 
 export type EpisodeTimeline = {

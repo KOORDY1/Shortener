@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { JobProgressStrip } from "@/components/job-progress-strip";
+import { StatusBadge } from "@/components/status-badge";
 import { ScriptDraftCard } from "@/components/script-draft-card";
 import {
   fetchJobsForCandidate,
@@ -64,13 +65,13 @@ export function CandidateJobsAndDraftsLive({
       <JobProgressStrip jobs={jobs} />
       {videoDrafts.length > 0 ? (
         <div className="panel">
-          <h2 className="section-title">Video drafts</h2>
+          <h2 className="section-title">비디오 초안</h2>
           <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {videoDrafts.map((vd) => (
               <li key={vd.id} className="row spaced">
                 <div>
                   <span className="muted">v{vd.version_no}</span>{" "}
-                  <span>{vd.status}</span>
+                  <StatusBadge value={vd.status} />
                   {vd.draft_video_path ? (
                     <div className="muted tiny path">{vd.draft_video_path}</div>
                   ) : null}
@@ -89,7 +90,7 @@ export function CandidateJobsAndDraftsLive({
         ))}
         {drafts.length === 0 ? (
           <div className="panel">
-            <p className="muted">아직 생성된 script draft가 없습니다.</p>
+            <p className="muted">아직 스크립트 초안이 없습니다.</p>
           </div>
         ) : null}
       </div>

@@ -27,6 +27,7 @@ class JobType(str, Enum):
     SCRIPT_GENERATION = "script_generation"
     VIDEO_DRAFT_RENDER = "video_draft_render"
     EXPORT_RENDER = "export_render"
+    SHORT_CLIP_RENDER = "short_clip_render"
 
 
 class JobStatus(str, Enum):
@@ -50,6 +51,8 @@ class VideoDraftStatus(str, Enum):
     RUNNING = "running"
     READY = "ready"
     FAILED = "failed"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class ExportStatus(str, Enum):
@@ -87,20 +90,28 @@ class Episode(Base):
     )
 
     jobs: Mapped[list["Job"]] = relationship(back_populates="episode", cascade="all, delete-orphan")
-    shots: Mapped[list["Shot"]] = relationship(back_populates="episode", cascade="all, delete-orphan")
+    shots: Mapped[list["Shot"]] = relationship(
+        back_populates="episode", cascade="all, delete-orphan"
+    )
     transcript_segments: Mapped[list["TranscriptSegment"]] = relationship(
         back_populates="episode",
         cascade="all, delete-orphan",
     )
-    candidates: Mapped[list["Candidate"]] = relationship(back_populates="episode", cascade="all, delete-orphan")
+    candidates: Mapped[list["Candidate"]] = relationship(
+        back_populates="episode", cascade="all, delete-orphan"
+    )
 
 
 class Job(Base):
     __tablename__ = "jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    episode_id: Mapped[str | None] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), nullable=True)
-    candidate_id: Mapped[str | None] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), nullable=True)
+    episode_id: Mapped[str | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), nullable=True
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=True
+    )
     type: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default=JobStatus.QUEUED.value)
     progress_percent: Mapped[int] = mapped_column(Integer, default=0)
@@ -166,6 +177,7 @@ class Candidate(Base):
     risk_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    short_clip_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     episode: Mapped[Episode] = relationship(back_populates="candidates")

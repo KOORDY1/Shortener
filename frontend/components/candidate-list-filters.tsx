@@ -1,6 +1,5 @@
 type FilterValues = {
   status?: string;
-  risk_level?: string;
   type?: string;
   min_score?: string;
   sort_by?: string;
@@ -17,33 +16,24 @@ export function CandidateListFilters({ episodeId, values }: Props) {
     <form action={`/episodes/${episodeId}/candidates`} method="get" className="panel soft filter-form">
       <div className="row wrap">
         <label className="field inline">
-          <span className="muted">Type</span>
+          <span className="muted">유형</span>
           <select className="input" name="type" defaultValue={values.type ?? ""}>
             <option value="">전체</option>
-            <option value="context_commentary">context_commentary</option>
+            <option value="context_commentary">맥락 해설</option>
           </select>
         </label>
         <label className="field inline">
-          <span className="muted">Status</span>
+          <span className="muted">상태</span>
           <select className="input" name="status" defaultValue={values.status ?? ""}>
             <option value="">전체</option>
-            <option value="generated">generated</option>
-            <option value="selected">selected</option>
-            <option value="rejected">rejected</option>
-            <option value="drafted">drafted</option>
+            <option value="generated">생성됨</option>
+            <option value="selected">선택됨</option>
+            <option value="rejected">거절됨</option>
+            <option value="drafted">초안</option>
           </select>
         </label>
         <label className="field inline">
-          <span className="muted">Risk</span>
-          <select className="input" name="risk_level" defaultValue={values.risk_level ?? ""}>
-            <option value="">전체</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-          </select>
-        </label>
-        <label className="field inline">
-          <span className="muted">Min score</span>
+          <span className="muted">최소 점수</span>
           <input
             className="input narrow"
             name="min_score"
@@ -56,18 +46,17 @@ export function CandidateListFilters({ episodeId, values }: Props) {
           />
         </label>
         <label className="field inline">
-          <span className="muted">Sort</span>
+          <span className="muted">정렬 기준</span>
           <select className="input" name="sort_by" defaultValue={values.sort_by ?? "total_score"}>
-            <option value="total_score">total_score</option>
-            <option value="risk_score">risk_score</option>
-            <option value="start_time">start_time</option>
+            <option value="total_score">총점</option>
+            <option value="start_time">시작 시각</option>
           </select>
         </label>
         <label className="field inline">
-          <span className="muted">Order</span>
+          <span className="muted">순서</span>
           <select className="input" name="order" defaultValue={values.order ?? "desc"}>
-            <option value="desc">desc</option>
-            <option value="asc">asc</option>
+            <option value="desc">내림차순 (큰 값 먼저)</option>
+            <option value="asc">오름차순 (작은 값 먼저)</option>
           </select>
         </label>
         <button type="submit" className="button ghost">

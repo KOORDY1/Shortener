@@ -3,9 +3,9 @@ import {
   CandidateListResponse,
   Episode,
   EpisodeListResponse,
+  EpisodeOperationOkResponse,
   EpisodeTimeline,
   ExportDetail,
-  Job,
   JobListResponse,
   ScriptDraftListResponse,
   VideoDraftDetail,
@@ -15,13 +15,47 @@ import {
 const apiBaseUrl =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
+/** HTTP 상태를 보존해 서버 컴포넌트에서 404와 5xx를 구분할 수 있게 합니다. */
+export class ApiHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiHttpError";
+    this.status = status;
+  }
+}
+
+function apiRootDisplay(): string {
+  return apiBaseUrl.replace(/\/api\/v1\/?$/, "") || apiBaseUrl;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    cache: "no-store"
-  });
+  const url = `${apiBaseUrl}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      cache: "no-store"
+    });
+  } catch (e) {
+    const inner =
+      e instanceof Error && e.cause instanceof Error
+        ? `${e.message} — ${e.cause.message}`
+        : e instanceof Error
+          ? e.message
+          : String(e);
+    throw new Error(
+      `API에 연결하지 못했습니다 (${url}). ` +
+        `백엔드가 ${apiRootDisplay()} 에서 실행 중인지 확인하세요 ` +
+        `(예: docker compose up backend-api, 또는 uvicorn). 원인: ${inner}`
+    );
+  }
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    throw new ApiHttpError(
+      response.status,
+      `API request failed: ${response.status} ${response.statusText}`
+    );
   }
   return (await response.json()) as T;
 }
@@ -41,6 +75,51 @@ export async function getEpisode(episodeId: string): Promise<Episode> {
   return apiFetch<Episode>(`/episodes/${episodeId}`);
 }
 
+export async function deleteEpisode(episodeId: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}/episodes/${episodeId}`, {
+    method: "DELETE",
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new ApiHttpError(
+      response.status,
+      `API request failed: ${response.status} ${response.statusText}`
+    );
+  }
+}
+
+export async function clearEpisodeAnalysis(episodeId: string): Promise<EpisodeOperationOkResponse> {
+  const response = await fetch(`${apiBaseUrl}/episodes/${episodeId}/clear-analysis`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new ApiHttpError(
+      response.status,
+      `API request failed: ${response.status} ${response.statusText}`
+    );
+  }
+  return (await response.json()) as EpisodeOperationOkResponse;
+}
+
+export async function clearEpisodeCache(episodeId: string): Promise<EpisodeOperationOkResponse> {
+  const response = await fetch(`${apiBaseUrl}/episodes/${episodeId}/clear-cache`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new ApiHttpError(
+      response.status,
+      `API request failed: ${response.status} ${response.statusText}`
+    );
+  }
+  return (await response.json()) as EpisodeOperationOkResponse;
+}
+
 export async function getEpisodeTimeline(episodeId: string): Promise<EpisodeTimeline> {
   return apiFetch<EpisodeTimeline>(`/episodes/${episodeId}/timeline`);
 }
@@ -54,7 +133,6 @@ export async function getEpisodeCandidates(
   filters?: {
     status?: string;
     min_score?: string;
-    risk_level?: string;
     type?: string;
     sort_by?: string;
     order?: string;
@@ -63,7 +141,6 @@ export async function getEpisodeCandidates(
   const query = new URLSearchParams();
   if (filters?.status) query.set("status", filters.status);
   if (filters?.min_score) query.set("min_score", filters.min_score);
-  if (filters?.risk_level) query.set("risk_level", filters.risk_level);
   if (filters?.type) query.set("type", filters.type);
   if (filters?.sort_by) query.set("sort_by", filters.sort_by);
   if (filters?.order) query.set("order", filters.order);

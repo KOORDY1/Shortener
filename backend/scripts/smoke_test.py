@@ -5,32 +5,35 @@ import os
 import shutil
 from pathlib import Path
 
-
 BASE_DIR = Path(__file__).resolve().parents[1]
 SMOKE_DATA_DIR = BASE_DIR / "data" / "smoke"
 SMOKE_STORAGE_DIR = BASE_DIR / "storage" / "smoke"
 
-if SMOKE_DATA_DIR.exists():
-    shutil.rmtree(SMOKE_DATA_DIR)
-if SMOKE_STORAGE_DIR.exists():
-    shutil.rmtree(SMOKE_STORAGE_DIR)
 
-SMOKE_DATA_DIR.mkdir(parents=True, exist_ok=True)
-SMOKE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+def prepare_smoke_env() -> None:
+    if SMOKE_DATA_DIR.exists():
+        shutil.rmtree(SMOKE_DATA_DIR)
+    if SMOKE_STORAGE_DIR.exists():
+        shutil.rmtree(SMOKE_STORAGE_DIR)
 
-os.environ["DATABASE_URL"] = f"sqlite:///{(SMOKE_DATA_DIR / 'smoke.db').as_posix()}"
-os.environ["STORAGE_ROOT"] = str(SMOKE_STORAGE_DIR)
-os.environ["CELERY_BROKER_URL"] = "memory://"
-os.environ["CELERY_RESULT_BACKEND"] = "cache+memory://"
-os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
-os.environ["ALLOW_MOCK_LLM_FALLBACK"] = "true"
+    SMOKE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SMOKE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-from fastapi.testclient import TestClient
-
-from app.main import create_app
+    os.environ["DATABASE_URL"] = f"sqlite:///{(SMOKE_DATA_DIR / 'smoke.db').as_posix()}"
+    os.environ["STORAGE_ROOT"] = str(SMOKE_STORAGE_DIR)
+    os.environ["CELERY_BROKER_URL"] = "memory://"
+    os.environ["CELERY_RESULT_BACKEND"] = "cache+memory://"
+    os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
+    os.environ["ALLOW_MOCK_LLM_FALLBACK"] = "true"
 
 
 def run() -> None:
+    prepare_smoke_env()
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
     app = create_app()
     with TestClient(app) as client:
         create_response = client.post(
@@ -97,6 +100,47 @@ def run() -> None:
         final_drafts_response.raise_for_status()
         script_drafts = final_drafts_response.json()["items"]
         assert len(script_drafts) == 2, script_drafts
+        script_draft_id = script_drafts[0]["id"]
+
+        vd_create = client.post(
+            f"/api/v1/candidates/{candidate_id}/video-drafts",
+            json={"script_draft_id": script_draft_id},
+        )
+        vd_create.raise_for_status()
+        video_draft_id = vd_create.json()["video_draft_id"]
+        assert video_draft_id
+
+        vd_get = client.get(f"/api/v1/video-drafts/{video_draft_id}")
+        vd_get.raise_for_status()
+        assert vd_get.json()["status"] == "ready"
+
+        rerender = client.post(f"/api/v1/video-drafts/{video_draft_id}/rerender", json={})
+        rerender.raise_for_status()
+        rerender_payload = rerender.json()
+        assert rerender_payload.get("job_id")
+
+        approve = client.post(f"/api/v1/video-drafts/{video_draft_id}/approve", json={})
+        approve.raise_for_status()
+        assert approve.json()["status"] == "approved"
+
+        export_resp = client.post(
+            f"/api/v1/video-drafts/{video_draft_id}/exports",
+            json={
+                "export_preset": "shorts_default",
+                "include_srt": True,
+                "include_script_txt": True,
+                "include_metadata_json": True,
+            },
+        )
+        export_resp.raise_for_status()
+        export_id = export_resp.json()["export_id"]
+        assert export_id
+
+        export_get = client.get(f"/api/v1/exports/{export_id}")
+        export_get.raise_for_status()
+        export_body = export_get.json()
+        assert export_body["status"] == "ready"
+        assert export_body.get("export_video_path")
 
         print(
             json.dumps(
@@ -106,6 +150,9 @@ def run() -> None:
                     "candidate_id": candidate_id,
                     "script_job_id": draft_job["job_id"],
                     "script_draft_ids": [item["id"] for item in script_drafts],
+                    "video_draft_id": video_draft_id,
+                    "rerender_job_id": rerender_payload["job_id"],
+                    "export_id": export_id,
                 },
                 indent=2,
             )

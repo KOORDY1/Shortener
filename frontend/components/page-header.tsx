@@ -14,7 +14,7 @@ export function PageHeader({ title, subtitle, actions, backHref }: Props) {
       <div>
         {backHref ? (
           <Link href={backHref} className="muted">
-            Back
+            뒤로
           </Link>
         ) : null}
         <h1 className="page-title">{title}</h1>
