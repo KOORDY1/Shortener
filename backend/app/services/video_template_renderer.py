@@ -19,6 +19,7 @@ from app.services.subtitle_exchange import (
     IMPORTED_ASS,
     IMPORTED_VTT,
 )
+from app.services.subtitle_parse import parse_subtitle_upload_file
 from app.services.tts_service import synthesize_short_tts
 
 
@@ -205,6 +206,63 @@ def _build_transcript_events(
             continue
         events.append((start_time - clip_start + offset_sec, end_time - clip_start + offset_sec, text))
     return events
+
+
+def _remap_imported_vtt_events(
+    cues: list[tuple[float, float, str]],
+    *,
+    spans: list[dict[str, Any]],
+    candidate_start: float,
+) -> tuple[list[list[tuple[float, float, str]]], str]:
+    total_span_duration = round(
+        sum(max(0.0, float(span["end_time"]) - float(span["start_time"])) for span in spans),
+        3,
+    )
+    max_cue_end = max((float(end_time) for _, end_time, _ in cues), default=0.0)
+    if max_cue_end <= total_span_duration + 0.5:
+        mode = "relative_concat"
+    elif max_cue_end <= max(float(span["end_time"]) for span in spans) + 1.0:
+        mode = "absolute_episode"
+    else:
+        mode = "relative_candidate_start"
+
+    remapped: list[list[tuple[float, float, str]]] = []
+    concat_cursor = 0.0
+    for span in spans:
+        span_events: list[tuple[float, float, str]] = []
+        span_start = float(span["start_time"])
+        span_end = float(span["end_time"])
+        span_duration = span_end - span_start
+        for cue_start, cue_end, text in cues:
+            cue_start = float(cue_start)
+            cue_end = float(cue_end)
+            if mode == "relative_concat":
+                overlap_start = max(cue_start, concat_cursor)
+                overlap_end = min(cue_end, concat_cursor + span_duration)
+                if overlap_end <= overlap_start:
+                    continue
+                local_start = overlap_start - concat_cursor
+                local_end = overlap_end - concat_cursor
+            elif mode == "absolute_episode":
+                overlap_start = max(cue_start, span_start)
+                overlap_end = min(cue_end, span_end)
+                if overlap_end <= overlap_start:
+                    continue
+                local_start = overlap_start - span_start
+                local_end = overlap_end - span_start
+            else:
+                absolute_start = candidate_start + cue_start
+                absolute_end = candidate_start + cue_end
+                overlap_start = max(absolute_start, span_start)
+                overlap_end = min(absolute_end, span_end)
+                if overlap_end <= overlap_start:
+                    continue
+                local_start = overlap_start - span_start
+                local_end = overlap_end - span_start
+            span_events.append((round(local_start, 3), round(local_end, 3), text))
+        remapped.append(span_events)
+        concat_cursor += span_duration
+    return remapped, mode
 
 
 def _build_srt(events: list[tuple[float, float, str]]) -> str:
@@ -490,6 +548,9 @@ def _render_main_segment(
     width: int,
     height: int,
     config: dict[str, Any],
+    subtitle_events_override: list[tuple[float, float, str]] | None = None,
+    subtitle_external_file: Path | None = None,
+    subtitle_external_is_vtt: bool = False,
 ) -> tuple[list[tuple[float, float, str]], dict[str, Any]]:
     duration_sec = float(span["end_time"]) - float(span["start_time"])
     top_safe = int(config.get("top_safe_area_height") or 240)
@@ -502,16 +563,14 @@ def _render_main_segment(
     content_bg_color = str(config.get("content_background_color") or "#000000")
     fit_mode = str(config.get("fit_mode") or "contain")
     subtitle_source = str(config.get("subtitle_source") or "transcript")
-    subtitle_events = (
-        _build_transcript_events(
+    subtitle_events = subtitle_events_override or []
+    if config.get("burned_caption", True) and subtitle_source != "none" and subtitle_events_override is None:
+        subtitle_events = _build_transcript_events(
             db,
             episode_id=episode_id,
             clip_start=float(span["start_time"]),
             clip_end=float(span["end_time"]),
         )
-        if config.get("burned_caption", True) and subtitle_source != "none"
-        else []
-    )
     overlay_ass_path = output_path.with_suffix(".ass")
     overlay_ass_path.write_text(
         _build_overlay_ass(
@@ -528,18 +587,13 @@ def _render_main_segment(
         encoding="utf-8",
     )
 
-    candidate_dir = episode_root(candidate.episode_id) / "candidates" / candidate.id
-    imported_subtitle = candidate_dir / IMPORTED_VTT
-    imported_ass = candidate_dir / IMPORTED_ASS
-    edited_ass = candidate_dir / EDITED_ASS
     external_subtitle_filter = ""
-    single_span = len(candidate_clip_spans(candidate)) == 1
-    if subtitle_source == "file" and single_span and imported_subtitle.is_file():
-        external_subtitle_filter = f",subtitles={_ffmpeg_filter_path(imported_subtitle)}:charenc=UTF-8"
-    elif subtitle_source == "file" and single_span and imported_ass.is_file():
-        external_subtitle_filter = f",subtitles={_ffmpeg_filter_path(imported_ass)}"
-    elif subtitle_source == "edited-ass" and single_span and edited_ass.is_file():
-        external_subtitle_filter = f",subtitles={_ffmpeg_filter_path(edited_ass)}"
+    if subtitle_external_file is not None and subtitle_external_file.is_file():
+        external_subtitle_filter = (
+            f",subtitles={_ffmpeg_filter_path(subtitle_external_file)}:charenc=UTF-8"
+            if subtitle_external_is_vtt
+            else f",subtitles={_ffmpeg_filter_path(subtitle_external_file)}"
+        )
 
     if fit_mode == "cover":
         fit_filter = (
@@ -611,7 +665,7 @@ def _render_main_segment(
         "span": span,
         "path": str(output_path.resolve()),
         "duration_sec": round(duration_sec, 3),
-        "subtitle_source": subtitle_source if subtitle_source != "file" or single_span else "transcript",
+            "subtitle_source": subtitle_source,
     }
 
 
@@ -681,12 +735,13 @@ def render_video_draft_assets(
             voice_key=str(config.get("tts_voice_key") or video_draft.tts_voice_key),
             duration_sec=duration_sec,
         )
+        final_segment_duration = float(audio_result["final_segment_duration_sec"])
         segment_path = output_dir / f"{kind}_segment_r{render_revision}.mp4"
         _write_text_segment(
             output_path=segment_path,
             width=width,
             height=height,
-            duration_sec=duration_sec,
+            duration_sec=final_segment_duration,
             background_color=str(config.get("background_color") or "#111111"),
             text=text,
             audio_path=Path(audio_result["path"]),
@@ -697,18 +752,51 @@ def render_video_draft_assets(
             "kind": kind,
             "path": str(segment_path.resolve()),
             "start_time": round(cursor, 3),
-            "end_time": round(cursor + duration_sec, 3),
+            "end_time": round(cursor + final_segment_duration, 3),
             "tts": audio_result,
         }
-        cursor += duration_sec
+        cursor += final_segment_duration
         timeline_segments.append(entry)
         return entry
 
     append_text_segment("intro", "intro_tts_enabled", "intro_tts_text", "intro_duration_sec")
 
     spans = candidate_clip_spans(candidate)
+    candidate_dir = episode_root(candidate.episode_id) / "candidates" / candidate.id
+    imported_vtt = candidate_dir / IMPORTED_VTT
+    imported_ass = candidate_dir / IMPORTED_ASS
+    edited_ass = candidate_dir / EDITED_ASS
+    subtitle_source = str(config.get("subtitle_source") or "transcript")
+    subtitle_mode = subtitle_source
+    subtitle_warnings: list[str] = []
+    imported_vtt_remapped: list[list[tuple[float, float, str]]] | None = None
+    imported_vtt_mode: str | None = None
+    if subtitle_source == "file" and imported_vtt.is_file():
+        imported_vtt_remapped, imported_vtt_mode = _remap_imported_vtt_events(
+            parse_subtitle_upload_file(imported_vtt),
+            spans=spans,
+            candidate_start=float(candidate.start_time),
+        )
+    elif subtitle_source == "file" and imported_ass.is_file() and len(spans) > 1:
+        subtitle_mode = "transcript"
+        subtitle_warnings.append("imported_ass_composite_not_supported_fallback_to_transcript")
+    elif subtitle_source == "edited-ass" and len(spans) > 1:
+        subtitle_mode = "transcript"
+        subtitle_warnings.append("edited_ass_composite_not_supported_fallback_to_transcript")
+
     for index, span in enumerate(spans, start=1):
         segment_path = output_dir / f"main_span_{index}_r{render_revision}.mp4"
+        subtitle_events_override = None
+        subtitle_external_file = None
+        subtitle_external_is_vtt = False
+        if subtitle_mode == "file" and imported_vtt_remapped is not None:
+            subtitle_events_override = imported_vtt_remapped[index - 1]
+        elif subtitle_mode == "file" and imported_ass.is_file() and len(spans) == 1:
+            subtitle_external_file = imported_ass
+        elif subtitle_mode == "edited-ass" and edited_ass.is_file() and len(spans) == 1:
+            subtitle_external_file = edited_ass
+        if subtitle_external_file is not None:
+            subtitle_external_is_vtt = subtitle_external_file.suffix.lower() == ".vtt"
         subtitle_events, timeline_meta = _render_main_segment(
             db,
             source_path=source_path,
@@ -718,7 +806,10 @@ def render_video_draft_assets(
             output_path=segment_path,
             width=width,
             height=height,
-            config=config,
+            config={**config, "subtitle_source": subtitle_mode},
+            subtitle_events_override=subtitle_events_override,
+            subtitle_external_file=subtitle_external_file,
+            subtitle_external_is_vtt=subtitle_external_is_vtt,
         )
         segment_duration = float(timeline_meta["duration_sec"])
         shifted_events = [(start + cursor, end + cursor, text) for start, end, text in subtitle_events]
@@ -792,7 +883,12 @@ def render_video_draft_assets(
         "provider": "ffmpeg_template_renderer",
         "composite": bool(candidate.metadata_json.get("composite")),
         "clip_spans": spans,
+        "subtitle_mode": subtitle_mode,
     }
+    if imported_vtt_mode:
+        metadata["imported_vtt_remap_mode"] = imported_vtt_mode
+    if subtitle_warnings:
+        metadata["subtitle_warnings"] = subtitle_warnings
     tts_entries = [segment.get("tts") for segment in timeline_segments if segment.get("tts")]
     if tts_entries:
         metadata["tts_segments"] = tts_entries

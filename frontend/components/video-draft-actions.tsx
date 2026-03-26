@@ -28,6 +28,7 @@ export function VideoDraftActions({ draft }: Props) {
   const router = useRouter();
   const [notes, setNotes] = useState(draft.operator_notes ?? "");
   const [rejectReason, setRejectReason] = useState("");
+  const [exportPreset, setExportPreset] = useState("shorts_default");
   const [saving, setSaving] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -107,7 +108,7 @@ export function VideoDraftActions({ draft }: Props) {
       }>(`/video-drafts/${draft.id}/exports`, {
         method: "POST",
         body: JSON.stringify({
-          export_preset: "shorts_default",
+          export_preset: exportPreset,
           include_srt: true,
           include_script_txt: true,
           include_metadata_json: true
@@ -179,7 +180,15 @@ export function VideoDraftActions({ draft }: Props) {
           {actionBusy === "reject" ? "처리 중…" : "거절"}
         </button>
       </div>
-      <div className="row">
+      <div className="stack">
+        <label className="field">
+          <span>Export preset</span>
+          <select className="input" value={exportPreset} onChange={(e) => setExportPreset(e.target.value)}>
+            <option value="shorts_default">shorts_default</option>
+            <option value="review_lowres">review_lowres</option>
+            <option value="archive_master">archive_master</option>
+          </select>
+        </label>
         <button className="button" type="button" disabled={exporting} onClick={onExport}>
           {exporting ? "보내는 중…" : "최종 export 만들기"}
         </button>

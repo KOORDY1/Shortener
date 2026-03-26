@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from celery import chain
 
 from app.core.celery_app import celery_app
-from app.db.models import Candidate, Episode, EpisodeStatus, Job
+from app.db.models import Candidate, Episode, EpisodeStatus, Export, Job, VideoDraft
 from app.db.session import SessionLocal
 from app.services.analysis_metadata import mark_analysis_failed
 from app.services.analysis_service import (
@@ -20,6 +20,12 @@ from app.services.analysis_service import (
 from app.services.jobs import mark_job_failed, mark_job_running, mark_job_succeeded
 from app.services.script_service import generate_script_drafts_for_candidate
 from app.services.short_clip_service import render_candidate_short_clip
+from app.services.video_draft_service import (
+    mark_export_failed,
+    mark_video_draft_failed,
+    render_export,
+    render_video_draft,
+)
 
 RENDER_EDITOR_META_KEY = "render_editor"
 
@@ -338,3 +344,90 @@ def launch_short_clip_render(
         use_edited_ass=use_edited_ass,
         output_kind=output_kind,
     )
+
+
+@celery_app.task(name="tasks.render_video_draft")
+def render_video_draft_task(video_draft_id: str, job_id: str) -> dict:
+    try:
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is None:
+                raise ValueError("Job not found")
+            video_draft = db.get(VideoDraft, video_draft_id)
+            if video_draft is None:
+                raise ValueError("Video draft not found")
+            mark_job_running(db, job, step="prepare_video_draft_render", progress_percent=10)
+            mark_job_running(db, job, step="render_video_draft_assets", progress_percent=45)
+            updated = render_video_draft(db, video_draft)
+            payload = {
+                "video_draft_id": updated.id,
+                "draft_video_path": updated.draft_video_path,
+                "subtitle_path": updated.subtitle_path,
+                "thumbnail_path": updated.thumbnail_path,
+                "render_revision": (updated.metadata_json or {}).get("render_revision"),
+            }
+            mark_job_succeeded(db, job, payload=payload)
+            return payload
+    except Exception as exc:
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is not None:
+                mark_job_failed(db, job, step="render_video_draft", error_message=str(exc))
+            video_draft = db.get(VideoDraft, video_draft_id)
+            if video_draft is not None:
+                mark_video_draft_failed(db, video_draft, error_message=str(exc))
+        raise
+
+
+@celery_app.task(name="tasks.render_export_assets")
+def render_export_assets_task(export_id: str, job_id: str) -> dict:
+    try:
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is None:
+                raise ValueError("Job not found")
+            export = db.get(Export, export_id)
+            if export is None:
+                raise ValueError("Export not found")
+            video_draft = db.get(VideoDraft, export.video_draft_id)
+            if video_draft is None:
+                raise ValueError("Video draft not found")
+            request_meta = dict(export.metadata_json or {})
+            mark_job_running(db, job, step="prepare_export_assets", progress_percent=10)
+            mark_job_running(db, job, step="render_export_assets", progress_percent=60)
+            updated = render_export(
+                db,
+                export=export,
+                video_draft=video_draft,
+                export_preset=export.export_preset,
+                include_srt=bool(request_meta.get("include_srt", True)),
+                include_script_txt=bool(request_meta.get("include_script_txt", True)),
+                include_metadata_json=bool(request_meta.get("include_metadata_json", True)),
+            )
+            payload = {
+                "export_id": updated.id,
+                "export_video_path": updated.export_video_path,
+                "export_subtitle_path": updated.export_subtitle_path,
+                "export_script_path": updated.export_script_path,
+                "export_metadata_path": updated.export_metadata_path,
+                "file_size_bytes": updated.file_size_bytes,
+            }
+            mark_job_succeeded(db, job, payload=payload)
+            return payload
+    except Exception as exc:
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is not None:
+                mark_job_failed(db, job, step="render_export_assets", error_message=str(exc))
+            export = db.get(Export, export_id)
+            if export is not None:
+                mark_export_failed(db, export, error_message=str(exc))
+        raise
+
+
+def launch_video_draft_render(*, video_draft_id: str, job_id: str) -> None:
+    render_video_draft_task.delay(video_draft_id=video_draft_id, job_id=job_id)
+
+
+def launch_export_render(*, export_id: str, job_id: str) -> None:
+    render_export_assets_task.delay(export_id=export_id, job_id=job_id)

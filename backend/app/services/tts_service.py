@@ -8,6 +8,7 @@ from typing import TypedDict
 import httpx
 
 from app.core.config import get_settings
+from app.services.audio_probe import probe_audio_duration_seconds
 
 
 class TTSResult(TypedDict):
@@ -15,7 +16,9 @@ class TTSResult(TypedDict):
     provider: str
     voice_key: str
     fallback_reason: str | None
-    duration_sec: float
+    requested_duration_sec: float
+    actual_audio_duration_sec: float
+    final_segment_duration_sec: float
 
 
 def _sanitize_voice(voice_key: str | None) -> str:
@@ -49,6 +52,41 @@ def _ffmpeg_silence(path: Path, duration_sec: float) -> None:
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
+def _normalize_audio_duration(
+    input_path: Path,
+    *,
+    output_path: Path,
+    requested_duration_sec: float,
+    actual_duration_sec: float | None,
+) -> tuple[Path, float]:
+    target_duration = max(0.0, float(requested_duration_sec))
+    measured_duration = float(actual_duration_sec or 0.0)
+    if target_duration <= 0:
+        return input_path, max(0.0, measured_duration)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not measured_duration:
+        _ffmpeg_silence(output_path, target_duration)
+        return output_path, target_duration
+    if abs(measured_duration - target_duration) <= 0.08:
+        return input_path, round(measured_duration, 3)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(input_path),
+        "-af",
+        f"apad=pad_dur={target_duration},atrim=0:{target_duration}",
+        "-c:a",
+        "aac",
+        str(output_path),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return output_path, target_duration
+
+
 def synthesize_short_tts(
     *,
     text: str,
@@ -78,12 +116,21 @@ def synthesize_short_tts(
             )
             response.raise_for_status()
             output_path.write_bytes(response.content)
+            actual_duration = probe_audio_duration_seconds(output_path)
+            normalized_path, final_duration = _normalize_audio_duration(
+                output_path,
+                output_path=output_path.with_suffix(".m4a"),
+                requested_duration_sec=duration_sec,
+                actual_duration_sec=actual_duration,
+            )
             return {
-                "path": str(output_path.resolve()),
+                "path": str(normalized_path.resolve()),
                 "provider": "openai_tts",
                 "voice_key": normalized_voice,
                 "fallback_reason": None,
-                "duration_sec": duration_sec,
+                "requested_duration_sec": duration_sec,
+                "actual_audio_duration_sec": actual_duration or duration_sec,
+                "final_segment_duration_sec": final_duration,
             }
         except Exception as exc:
             _ffmpeg_silence(output_path.with_suffix(".m4a"), duration_sec)
@@ -93,7 +140,9 @@ def synthesize_short_tts(
                 "provider": "silent_fallback",
                 "voice_key": normalized_voice,
                 "fallback_reason": str(exc)[:500],
-                "duration_sec": duration_sec,
+                "requested_duration_sec": duration_sec,
+                "actual_audio_duration_sec": duration_sec,
+                "final_segment_duration_sec": duration_sec,
             }
 
     silent_path = output_path.with_suffix(".m4a")
@@ -104,5 +153,7 @@ def synthesize_short_tts(
         "provider": "silent_fallback",
         "voice_key": normalized_voice,
         "fallback_reason": reason,
-        "duration_sec": duration_sec,
+        "requested_duration_sec": duration_sec,
+        "actual_audio_duration_sec": duration_sec,
+        "final_segment_duration_sec": duration_sec,
     }

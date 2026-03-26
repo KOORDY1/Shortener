@@ -56,6 +56,7 @@ export function VideoDraftTemplateEditor({ draft }: Props) {
   const [config, setConfig] = useState<Record<string, unknown>>(initialConfig);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   function update(path: string[], value: unknown) {
     setConfig((prev) => {
@@ -216,11 +217,28 @@ export function VideoDraftTemplateEditor({ draft }: Props) {
         </label>
       </div>
 
+      <div className="row wrap">
+        <button className="button ghost" type="button" onClick={() => setShowAdvanced((value) => !value)}>
+          {showAdvanced ? "고급 옵션 숨기기" : "고급 옵션 보기"}
+        </button>
+      </div>
+
       {["top_title", "bottom_caption", "source_label"].map((slotName) => {
         const slot = slots[slotName] ?? {};
+        const defaultSlot =
+          ((initialConfig.text_slots as Record<string, Record<string, unknown>> | undefined) ?? {})[slotName] ?? {};
         return (
           <div key={slotName} className="panel soft stack">
-            <strong>{slotName}</strong>
+            <div className="spaced">
+              <strong>{slotName}</strong>
+              <button
+                type="button"
+                className="button ghost"
+                onClick={() => update(["text_slots", slotName], deepClone(defaultSlot))}
+              >
+                기본값 복원
+              </button>
+            </div>
             <label className="field">
               <span>텍스트</span>
               <input
@@ -277,6 +295,70 @@ export function VideoDraftTemplateEditor({ draft }: Props) {
                   />
                 </div>
               </label>
+              {showAdvanced ? (
+                <>
+                  <label className="field">
+                    <span>anchor</span>
+                    <select
+                      className="input"
+                      value={String(slot.anchor ?? "top-center")}
+                      onChange={(e) => update(["text_slots", slotName, "anchor"], e.target.value)}
+                    >
+                      <option value="top-left">top-left</option>
+                      <option value="top-center">top-center</option>
+                      <option value="top-right">top-right</option>
+                      <option value="center">center</option>
+                      <option value="bottom-left">bottom-left</option>
+                      <option value="bottom-center">bottom-center</option>
+                      <option value="bottom-right">bottom-right</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>font family</span>
+                    <input
+                      className="input"
+                      value={String(slot.font_family ?? "Noto Sans CJK KR")}
+                      onChange={(e) => update(["text_slots", slotName, "font_family"], e.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>stroke color</span>
+                    <input
+                      className="input"
+                      type="color"
+                      value={String(slot.stroke_color ?? "#000000")}
+                      onChange={(e) => update(["text_slots", slotName, "stroke_color"], e.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>stroke width</span>
+                    <input
+                      className="input"
+                      type="number"
+                      value={Number(slot.stroke_width ?? 2)}
+                      onChange={(e) => update(["text_slots", slotName, "stroke_width"], Number(e.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>background color</span>
+                    <input
+                      className="input"
+                      type="color"
+                      value={String(slot.background_color || "#000000")}
+                      onChange={(e) => update(["text_slots", slotName, "background_color"], e.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>line clamp</span>
+                    <input
+                      className="input"
+                      type="number"
+                      value={Number(slot.line_clamp ?? 2)}
+                      onChange={(e) => update(["text_slots", slotName, "line_clamp"], Number(e.target.value))}
+                    />
+                  </label>
+                </>
+              ) : null}
             </div>
           </div>
         );

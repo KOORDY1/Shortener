@@ -8,7 +8,8 @@ from app.api.v1.deps import get_candidate_or_404, get_script_draft_or_404
 from app.db.models import VideoDraft
 from app.db.session import get_db
 from app.schemas import TriggerJobResponse, VideoDraftCreateRequest, VideoDraftListResponse, VideoDraftSummary
-from app.services.video_draft_service import create_video_draft
+from app.services.video_draft_service import create_video_draft_record, create_video_draft_render_job
+from app.tasks.pipelines import launch_video_draft_render
 
 router = APIRouter(tags=["candidates"])
 
@@ -43,7 +44,7 @@ def create_candidate_video_draft(
             status_code=400, detail="script_draft does not belong to this candidate"
         )
 
-    video_draft = create_video_draft(
+    video_draft = create_video_draft_record(
         db,
         candidate=candidate,
         script_draft=script_draft,
@@ -52,9 +53,12 @@ def create_candidate_video_draft(
         burned_caption=request.burned_caption,
         render_config=request.render_config,
     )
+    job = create_video_draft_render_job(db, video_draft=video_draft, step="create")
+    launch_video_draft_render(video_draft_id=video_draft.id, job_id=job.id)
     return TriggerJobResponse(
         candidate_id=candidate.id,
+        job_id=job.id,
         video_draft_id=video_draft.id,
-        status=video_draft.status,
-        message="Video draft rendered",
+        status=job.status,
+        message="Video draft queued",
     )

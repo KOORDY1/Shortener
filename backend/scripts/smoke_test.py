@@ -26,6 +26,7 @@ def prepare_smoke_env() -> None:
     os.environ["CELERY_RESULT_BACKEND"] = "cache+memory://"
     os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
     os.environ["ALLOW_MOCK_LLM_FALLBACK"] = "true"
+    os.environ["OPENAI_API_KEY"] = ""
 
 
 def build_smoke_video_bytes() -> bytes:
@@ -62,6 +63,8 @@ def run() -> None:
 
     from fastapi.testclient import TestClient
 
+    from app.services.candidate_generation import ScoredWindow
+    from app.services.composite_candidate_generation import build_composite_candidates
     from app.main import create_app
 
     app = create_app()
@@ -134,15 +137,49 @@ def run() -> None:
 
         vd_create = client.post(
             f"/api/v1/candidates/{candidate_id}/video-drafts",
-            json={"script_draft_id": script_draft_id},
+            json={
+                "script_draft_id": script_draft_id,
+                "template_type": "dramashorts_v1",
+                "render_config": {
+                    "intro_tts_enabled": True,
+                    "intro_tts_text": "인트로 테스트 문장입니다.",
+                    "intro_duration_sec": 1.8,
+                    "outro_tts_enabled": True,
+                    "outro_tts_text": "아웃트로 테스트 문장입니다.",
+                    "outro_duration_sec": 1.6
+                },
+            },
         )
         vd_create.raise_for_status()
         video_draft_id = vd_create.json()["video_draft_id"]
+        assert vd_create.json()["job_id"]
         assert video_draft_id
 
         vd_get = client.get(f"/api/v1/video-drafts/{video_draft_id}")
         vd_get.raise_for_status()
-        assert vd_get.json()["status"] == "ready"
+        draft_body = vd_get.json()
+        assert draft_body["status"] == "ready"
+        tts_segments = draft_body["metadata"].get("tts_segments") or []
+        assert len(tts_segments) >= 2, draft_body["metadata"]
+        assert all(segment["final_segment_duration_sec"] > 0 for segment in tts_segments)
+        assert any(segment["provider"] == "silent_fallback" for segment in tts_segments)
+
+        patch_resp = client.patch(
+            f"/api/v1/video-drafts/{video_draft_id}",
+            json={
+                "render_config": {
+                    **draft_body["render_config"],
+                    "text_slots": {
+                        **draft_body["render_config"].get("text_slots", {}),
+                        "top_title": {
+                            **draft_body["render_config"].get("text_slots", {}).get("top_title", {}),
+                            "text": "패치된 훅 문구"
+                        }
+                    }
+                }
+            },
+        )
+        patch_resp.raise_for_status()
 
         rerender = client.post(f"/api/v1/video-drafts/{video_draft_id}/rerender", json={})
         rerender.raise_for_status()
@@ -156,7 +193,7 @@ def run() -> None:
         export_resp = client.post(
             f"/api/v1/video-drafts/{video_draft_id}/exports",
             json={
-                "export_preset": "shorts_default",
+                "export_preset": "review_lowres",
                 "include_srt": True,
                 "include_script_txt": True,
                 "include_metadata_json": True,
@@ -164,6 +201,7 @@ def run() -> None:
         )
         export_resp.raise_for_status()
         export_id = export_resp.json()["export_id"]
+        assert export_resp.json()["job_id"]
         assert export_id
 
         export_get = client.get(f"/api/v1/exports/{export_id}")
@@ -171,6 +209,38 @@ def run() -> None:
         export_body = export_get.json()
         assert export_body["status"] == "ready"
         assert export_body.get("export_video_path")
+        assert export_body["export_preset"] == "review_lowres"
+        assert export_body["metadata"].get("preset_profile")
+
+        composite_candidates = build_composite_candidates(
+            [
+                ScoredWindow(
+                    start_time=10.0,
+                    end_time=24.0,
+                    total_score=8.9,
+                    scores_json={"total_score": 8.9},
+                    title_hint="setup",
+                    metadata_json={
+                        "dedupe_tokens": ["리처드", "투자", "제안"],
+                        "ranking_focus": "comedy_or_emotion",
+                        "transcript_excerpt": "리처드가 투자 제안을 듣는다",
+                    },
+                ),
+                ScoredWindow(
+                    start_time=52.0,
+                    end_time=67.0,
+                    total_score=8.7,
+                    scores_json={"total_score": 8.7},
+                    title_hint="payoff",
+                    metadata_json={
+                        "dedupe_tokens": ["리처드", "투자", "거절"],
+                        "ranking_focus": "comedy_or_emotion",
+                        "transcript_excerpt": "리처드가 투자 제안을 거절한다",
+                    },
+                ),
+            ]
+        )
+        assert composite_candidates, "Expected composite heuristic to produce at least one pair"
 
         print(
             json.dumps(

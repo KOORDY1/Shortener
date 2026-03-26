@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_video_draft_or_404
-from app.db.models import VideoDraftStatus
+from app.db.models import Candidate, VideoDraftStatus
 from app.db.session import get_db
 from app.schemas import (
     ExportCreateRequest,
@@ -16,7 +16,12 @@ from app.schemas import (
     VideoDraftPatchRequest,
     VideoDraftRejectRequest,
 )
-from app.services.video_draft_service import create_export, run_rerender
+from app.services.video_draft_service import (
+    create_export_record,
+    create_export_render_job,
+    create_video_draft_render_job,
+)
+from app.tasks.pipelines import launch_export_render, launch_video_draft_render
 
 router = APIRouter(tags=["video-drafts"])
 
@@ -71,16 +76,20 @@ def patch_video_draft(
 @router.post("/video-drafts/{video_draft_id}/rerender", response_model=TriggerJobResponse)
 def rerender_video_draft(video_draft_id: str, db: Session = Depends(get_db)) -> TriggerJobResponse:
     vd = get_video_draft_or_404(db, video_draft_id)
-    try:
-        job, updated = run_rerender(db, vd)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if vd.status == VideoDraftStatus.REJECTED.value:
+        raise HTTPException(status_code=400, detail="rejected drafts cannot be rerendered")
+    vd.status = VideoDraftStatus.QUEUED.value
+    db.add(vd)
+    db.commit()
+    db.refresh(vd)
+    job = create_video_draft_render_job(db, video_draft=vd, step="rerender")
+    launch_video_draft_render(video_draft_id=vd.id, job_id=job.id)
     return TriggerJobResponse(
-        candidate_id=updated.candidate_id,
+        candidate_id=vd.candidate_id,
         job_id=job.id,
-        video_draft_id=updated.id,
+        video_draft_id=vd.id,
         status=job.status,
-        message="Video draft rerendered",
+        message="Video draft rerender queued",
     )
 
 
@@ -121,7 +130,10 @@ def create_video_draft_export(
     db: Session = Depends(get_db),
 ) -> TriggerJobResponse:
     vd = get_video_draft_or_404(db, video_draft_id)
-    exp = create_export(
+    candidate = db.get(Candidate, vd.candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    exp = create_export_record(
         db,
         video_draft=vd,
         export_preset=request.export_preset,
@@ -129,10 +141,18 @@ def create_video_draft_export(
         include_script_txt=request.include_script_txt,
         include_metadata_json=request.include_metadata_json,
     )
+    job = create_export_render_job(
+        db,
+        export=exp,
+        candidate_id=vd.candidate_id,
+        episode_id=candidate.episode_id,
+    )
+    launch_export_render(export_id=exp.id, job_id=job.id)
     return TriggerJobResponse(
         candidate_id=vd.candidate_id,
         video_draft_id=vd.id,
+        job_id=job.id,
         export_id=exp.id,
-        status=exp.status,
-        message="Export created",
+        status=job.status,
+        message="Export queued",
     )

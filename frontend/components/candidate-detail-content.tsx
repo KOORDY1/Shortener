@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { CandidateJobsAndDraftsLive } from "@/components/candidate-jobs-and-drafts-live";
+import { CompositeSpanPreview } from "@/components/composite-span-preview";
 import { ShortClipPanel } from "@/components/short-clip-panel";
 import { SourceVideoPlayer } from "@/components/source-video-player";
 import { CandidateGenerateScriptsButton } from "@/components/mutation-buttons";
@@ -60,6 +61,12 @@ export function CandidateDetailContent({
     typeof renderConfig.trim_end === "number" ? renderConfig.trim_end : candidate.end_time;
   const [trimStartSec, setTrimStartSec] = useState(initialTrimStart);
   const [trimEndSec, setTrimEndSec] = useState(initialTrimEnd);
+  const clipSpans = candidate.clip_spans ?? [];
+  const derivedSpanIndex = clipSpans.findIndex(
+    (span) =>
+      Math.abs(span.start_time - trimStartSec) < 0.05 && Math.abs(span.end_time - trimEndSec) < 0.05
+  );
+  const activeSpanIndex = derivedSpanIndex >= 0 ? derivedSpanIndex : candidate.primary_span_index ?? 0;
 
   return (
     <main className="page">
@@ -126,20 +133,18 @@ export function CandidateDetailContent({
         </div>
       </div>
 
-      {(candidate.clip_spans ?? []).length > 0 ? (
-        <div className="panel">
-          <h2 className="section-title">클립 span</h2>
-          <div className="stack">
-            {(candidate.clip_spans ?? []).map((span, index) => (
-              <div key={`${span.order}-${index}`} className="timeline-block">
-                <strong>
-                  #{index + 1} {formatTimecode(span.start_time)} - {formatTimecode(span.end_time)}
-                </strong>
-                <div>{span.role ?? (index === candidate.primary_span_index ? "primary" : "span")}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {clipSpans.length > 0 ? (
+        <CompositeSpanPreview
+          spans={clipSpans}
+          shots={candidate.shots}
+          activeSpanIndex={activeSpanIndex}
+          onSelectSpan={(index) => {
+            const span = clipSpans[index];
+            if (!span) return;
+            setTrimStartSec(span.start_time);
+            setTrimEndSec(span.end_time);
+          }}
+        />
       ) : null}
 
       <div className="panel">

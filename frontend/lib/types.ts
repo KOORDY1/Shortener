@@ -214,6 +214,16 @@ export type VideoDraftDetail = {
   metadata: Record<string, unknown>;
 };
 
+export type TtsSegmentMetadata = {
+  path: string;
+  provider: string;
+  voice_key: string;
+  fallback_reason?: string | null;
+  requested_duration_sec: number;
+  actual_audio_duration_sec: number;
+  final_segment_duration_sec: number;
+};
+
 export type ExportDetail = {
   id: string;
   video_draft_id: string;

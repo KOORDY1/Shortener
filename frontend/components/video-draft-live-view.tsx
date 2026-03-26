@@ -7,7 +7,7 @@ import { VideoDraftActions } from "@/components/video-draft-actions";
 import { VideoDraftTemplateEditor } from "@/components/video-draft-template-editor";
 import { apiBaseUrl } from "@/lib/api";
 import { fetchJobsForCandidate, fetchVideoDraft } from "@/lib/public-api";
-import type { Job, VideoDraftDetail } from "@/lib/types";
+import type { Job, TtsSegmentMetadata, VideoDraftDetail } from "@/lib/types";
 
 type Props = {
   initialDraft: VideoDraftDetail;
@@ -16,7 +16,6 @@ type Props = {
 function hasActiveDraftJobs(jobs: Job[]) {
   return jobs.some(
     (job) =>
-      job.candidate_id === jobs[0]?.candidate_id &&
       (job.type === "video_draft_render" || job.type === "export_render") &&
       (job.status === "queued" || job.status === "running")
   );
@@ -34,6 +33,10 @@ export function VideoDraftLiveView({ initialDraft }: Props) {
     initialData: initialDraft,
     refetchInterval: hasActiveDraftJobs(jobs) ? 2000 : false
   });
+  const ttsSegments = Array.isArray(draft.metadata.tts_segments)
+    ? (draft.metadata.tts_segments as TtsSegmentMetadata[])
+    : [];
+  const hasSilentFallback = ttsSegments.some((segment) => segment.provider === "silent_fallback");
 
   return (
     <main className="page">
@@ -81,6 +84,28 @@ export function VideoDraftLiveView({ initialDraft }: Props) {
               <p>{draft.tts_voice_key}</p>
             </div>
           ) : null}
+          {ttsSegments.length > 0 ? (
+            <div className="stack">
+              <span className="muted">TTS 세그먼트</span>
+              {ttsSegments.map((segment, index) => (
+                <div key={`${segment.provider}-${index}`} className="panel soft">
+                  <div className="row wrap">
+                    <StatusBadge value={segment.provider === "silent_fallback" ? "failed" : "ready"} />
+                    <span className="muted tiny">{segment.provider}</span>
+                  </div>
+                  <div className="muted tiny">
+                    요청 {segment.requested_duration_sec}s / 실제 오디오 {segment.actual_audio_duration_sec}s / 최종 세그먼트{" "}
+                    {segment.final_segment_duration_sec}s
+                  </div>
+                  {segment.fallback_reason ? (
+                    <div className="muted tiny" style={{ color: "var(--danger, #c00)" }}>
+                      fallback: {segment.fallback_reason}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <div className="panel stack">
@@ -88,6 +113,11 @@ export function VideoDraftLiveView({ initialDraft }: Props) {
             <h2 className="section-title">미리보기</h2>
             {hasActiveDraftJobs(jobs) ? <StatusBadge value="running" /> : null}
           </div>
+          {hasSilentFallback ? (
+            <p className="muted" style={{ color: "var(--danger, #c00)" }}>
+              일부 TTS 세그먼트가 `silent_fallback`으로 렌더되었습니다. 음성이 비어 있을 수 있습니다.
+            </p>
+          ) : null}
           {draft.draft_video_path ? (
             <video
               key={draft.draft_video_path}
