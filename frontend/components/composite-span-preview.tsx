@@ -8,9 +8,16 @@ type Props = {
   shots: Shot[];
   activeSpanIndex: number;
   onSelectSpan: (index: number) => void;
+  onPlayFromSpan: (index: number) => void;
 };
 
-export function CompositeSpanPreview({ spans, shots, activeSpanIndex, onSelectSpan }: Props) {
+export function CompositeSpanPreview({
+  spans,
+  shots,
+  activeSpanIndex,
+  onSelectSpan,
+  onPlayFromSpan
+}: Props) {
   return (
     <div className="panel stack">
       <h2 className="section-title">Composite Span Preview</h2>
@@ -48,7 +55,7 @@ export function CompositeSpanPreview({ spans, shots, activeSpanIndex, onSelectSp
                 <button type="button" className="button ghost" onClick={() => onSelectSpan(index)}>
                   이 span 보기
                 </button>
-                <button type="button" className="button ghost" onClick={() => onSelectSpan(index)}>
+                <button type="button" className="button ghost" onClick={() => onPlayFromSpan(index)}>
                   이 span부터 재생
                 </button>
               </div>

@@ -9,6 +9,8 @@ type Props = {
   segmentEnd?: number;
   onSegmentStartChange?: (value: number) => void;
   onSegmentEndChange?: (value: number) => void;
+  playFromTime?: number | null;
+  autoplayNonce?: number;
   showSegmentEditor?: boolean;
   /** 설정 시 업로드 VTT 또는 에피소드 자막(SRT/WebVTT) 기반 WebVTT를 `<track>`으로 겹칩니다(원본 타임라인). */
   webvttPreviewCandidateId?: string;
@@ -20,6 +22,8 @@ export function SourceVideoPlayer({
   segmentEnd,
   onSegmentStartChange,
   onSegmentEndChange,
+  playFromTime,
+  autoplayNonce,
   showSegmentEditor = false,
   webvttPreviewCandidateId
 }: Props) {
@@ -113,6 +117,14 @@ export function SourceVideoPlayer({
       v.removeEventListener("error", onErr);
     };
   }, [buildVideoErrorMessage, sourceKey, src]);
+
+  useEffect(() => {
+    if (playFromTime == null) return;
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = playFromTime;
+    void video.play().catch(() => undefined);
+  }, [playFromTime, autoplayNonce]);
 
   function onPlay() {
     const v = videoRef.current;

@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
+import { DebugDisclosure } from "@/components/debug-disclosure";
 import { VideoDraftActions } from "@/components/video-draft-actions";
 import { VideoDraftTemplateEditor } from "@/components/video-draft-template-editor";
 import { apiBaseUrl } from "@/lib/api";
@@ -66,18 +67,6 @@ export function VideoDraftLiveView({ initialDraft }: Props) {
             <span className="muted">자막 번인</span>
             <p>{draft.burned_caption ? "예" : "아니오"}</p>
           </div>
-          {draft.draft_video_path ? (
-            <div>
-              <span className="muted">초안 영상 경로</span>
-              <p className="tiny path">{draft.draft_video_path}</p>
-            </div>
-          ) : null}
-          {draft.metadata ? (
-            <div>
-              <span className="muted">렌더 메타</span>
-              <p className="tiny path">{JSON.stringify(draft.metadata)}</p>
-            </div>
-          ) : null}
           {draft.tts_voice_key ? (
             <div>
               <span className="muted">TTS</span>
@@ -133,6 +122,35 @@ export function VideoDraftLiveView({ initialDraft }: Props) {
           )}
         </div>
       </div>
+
+      <DebugDisclosure title="디버그 정보 보기">
+        {draft.draft_video_path ? (
+          <div>
+            <strong>draft_video_path</strong>
+            <p className="tiny path">{draft.draft_video_path}</p>
+          </div>
+        ) : null}
+        {draft.subtitle_path ? (
+          <div>
+            <strong>subtitle_path</strong>
+            <p className="tiny path">{draft.subtitle_path}</p>
+          </div>
+        ) : null}
+        {draft.thumbnail_path ? (
+          <div>
+            <strong>thumbnail_path</strong>
+            <p className="tiny path">{draft.thumbnail_path}</p>
+          </div>
+        ) : null}
+        <div>
+          <strong>metadata</strong>
+          <pre className="tiny path">{JSON.stringify(draft.metadata, null, 2)}</pre>
+        </div>
+        <div>
+          <strong>render_config</strong>
+          <pre className="tiny path">{JSON.stringify(draft.render_config, null, 2)}</pre>
+        </div>
+      </DebugDisclosure>
 
       <div className="grid two">
         <VideoDraftTemplateEditor draft={draft} />

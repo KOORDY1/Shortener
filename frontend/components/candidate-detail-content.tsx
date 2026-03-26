@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { CandidateJobsAndDraftsLive } from "@/components/candidate-jobs-and-drafts-live";
 import { CompositeSpanPreview } from "@/components/composite-span-preview";
+import { DebugDisclosure } from "@/components/debug-disclosure";
 import { ShortClipPanel } from "@/components/short-clip-panel";
 import { SourceVideoPlayer } from "@/components/source-video-player";
 import { CandidateGenerateScriptsButton } from "@/components/mutation-buttons";
@@ -61,6 +62,8 @@ export function CandidateDetailContent({
     typeof renderConfig.trim_end === "number" ? renderConfig.trim_end : candidate.end_time;
   const [trimStartSec, setTrimStartSec] = useState(initialTrimStart);
   const [trimEndSec, setTrimEndSec] = useState(initialTrimEnd);
+  const [playFromTime, setPlayFromTime] = useState<number | null>(null);
+  const [autoplayNonce, setAutoplayNonce] = useState(0);
   const clipSpans = candidate.clip_spans ?? [];
   const derivedSpanIndex = clipSpans.findIndex(
     (span) =>
@@ -92,6 +95,8 @@ export function CandidateDetailContent({
           segmentEnd={trimEndSec}
           onSegmentStartChange={setTrimStartSec}
           onSegmentEndChange={setTrimEndSec}
+          playFromTime={playFromTime}
+          autoplayNonce={autoplayNonce}
           showSegmentEditor
           webvttPreviewCandidateId={candidateId}
         />
@@ -143,6 +148,14 @@ export function CandidateDetailContent({
             if (!span) return;
             setTrimStartSec(span.start_time);
             setTrimEndSec(span.end_time);
+          }}
+          onPlayFromSpan={(index) => {
+            const span = clipSpans[index];
+            if (!span) return;
+            setTrimStartSec(span.start_time);
+            setTrimEndSec(span.end_time);
+            setPlayFromTime(span.start_time);
+            setAutoplayNonce((value) => value + 1);
           }}
         />
       ) : null}
@@ -203,12 +216,30 @@ export function CandidateDetailContent({
               <div className="muted tiny">
                 {formatTimecode(shot.start_time)} – {formatTimecode(shot.end_time)}
               </div>
-              {shot.thumbnail_path ? <div className="muted tiny path">{shot.thumbnail_path}</div> : null}
             </div>
           ))}
         </div>
         {candidate.shots.length === 0 ? <p className="muted">이 구간과 겹치는 샷이 없습니다.</p> : null}
       </div>
+
+      <DebugDisclosure title="기술 정보 펼치기">
+        {candidate.shots.some((shot) => shot.thumbnail_path) ? (
+          <div className="stack">
+            <strong>Shot thumbnail paths</strong>
+            {candidate.shots.map((shot) =>
+              shot.thumbnail_path ? (
+                <div key={shot.id} className="muted tiny path">
+                  #{shot.shot_index}: {shot.thumbnail_path}
+                </div>
+              ) : null
+            )}
+          </div>
+        ) : null}
+        <div>
+          <strong>Candidate metadata</strong>
+          <pre className="tiny path">{JSON.stringify(candidate.metadata, null, 2)}</pre>
+        </div>
+      </DebugDisclosure>
 
       {(candidate.transcript_segments ?? []).length > 0 ? (
         <div className="panel">
