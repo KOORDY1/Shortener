@@ -76,6 +76,20 @@ def fallback_drafts(
     return drafts
 
 
+def classify_fallback_reason(exc: Exception) -> str:
+    message = str(exc).lower()
+    exc_name = exc.__class__.__name__.lower()
+    if "openai_api_key" in message or "api key" in message:
+        return "missing_openai_api_key"
+    if "ratelimit" in exc_name or "rate limit" in message or "429" in message:
+        return "rate_limited"
+    if "json" in message or "drafts array" in message or "parse" in message:
+        return "openai_response_parse_failed"
+    if "timeout" in exc_name or "timeout" in message:
+        return "openai_timeout"
+    return "openai_request_failed"
+
+
 def generate_openai_drafts(
     *,
     candidate: Candidate,
@@ -130,7 +144,7 @@ def generate_draft_payloads(
     versions: int,
     tone: str,
     channel_style: str,
-) -> tuple[list[dict[str, Any]], str]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
         drafts = generate_openai_drafts(
             candidate=candidate,
@@ -140,11 +154,17 @@ def generate_draft_payloads(
             tone=tone,
             channel_style=channel_style,
         )
-        return drafts[:versions], "openai"
-    except Exception:
+        return drafts[:versions], {"provider": "openai", "model": settings.openai_model}
+    except Exception as exc:
         if not settings.allow_mock_llm_fallback:
             raise
-        return fallback_drafts(candidate, language, versions, channel_style), "mock"
+        fallback_reason = classify_fallback_reason(exc)
+        return fallback_drafts(candidate, language, versions, channel_style), {
+            "provider": "mock",
+            "model": settings.openai_model,
+            "fallback_reason": fallback_reason,
+            "source_error": str(exc)[:500],
+        }
 
 
 def generate_script_drafts_for_candidate(
@@ -156,7 +176,7 @@ def generate_script_drafts_for_candidate(
     tone: str,
     channel_style: str,
     force_regenerate: bool,
-) -> list[ScriptDraft]:
+) -> tuple[list[ScriptDraft], dict[str, Any]]:
     candidate = db.get(Candidate, candidate_id)
     if candidate is None:
         raise ValueError("Candidate not found")
@@ -176,7 +196,7 @@ def generate_script_drafts_for_candidate(
         db.commit()
 
     transcript_segments = candidate_segments(db, candidate)
-    payloads, provider = generate_draft_payloads(
+    payloads, generation_meta = generate_draft_payloads(
         candidate=candidate,
         transcript_segments=transcript_segments,
         language=language,
@@ -196,6 +216,11 @@ def generate_script_drafts_for_candidate(
         ]
         full_script_text = " ".join(part for part in [hook_text, body_text, cta_text] if part)
         estimated_duration_seconds = round(max(15.0, len(full_script_text) / 12), 2)
+        draft_metadata = {
+            **generation_meta,
+            "tone": tone,
+            "channel_style": channel_style,
+        }
         draft = ScriptDraft(
             candidate_id=candidate_id,
             version_no=index + 1,
@@ -206,7 +231,7 @@ def generate_script_drafts_for_candidate(
             full_script_text=full_script_text,
             estimated_duration_seconds=estimated_duration_seconds,
             title_options=title_options[:3] or [candidate.title_hint],
-            metadata_json={"provider": provider, "tone": tone, "channel_style": channel_style},
+            metadata_json=draft_metadata,
         )
         db.add(draft)
         created_drafts.append(draft)
@@ -217,4 +242,4 @@ def generate_script_drafts_for_candidate(
 
     for draft in created_drafts:
         db.refresh(draft)
-    return created_drafts
+    return created_drafts, generation_meta

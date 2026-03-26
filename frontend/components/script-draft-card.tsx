@@ -12,6 +12,11 @@ type Props = {
 };
 
 export function ScriptDraftCard({ draft, candidateId }: Props) {
+  const provider = typeof draft.metadata.provider === "string" ? draft.metadata.provider : "unknown";
+  const fallbackReason =
+    typeof draft.metadata.fallback_reason === "string" ? draft.metadata.fallback_reason : null;
+  const providerLabel = provider === "openai" ? "OpenAI" : provider === "mock" ? "Mock fallback" : provider;
+
   return (
     <div className="draft-card">
       <div className="spaced">
@@ -19,6 +24,13 @@ export function ScriptDraftCard({ draft, candidateId }: Props) {
         {draft.is_selected ? <StatusBadge value="selected" /> : null}
       </div>
       <div className="stack">
+        <div>
+          <span className="muted">생성</span>
+          <p>
+            {providerLabel}
+            {fallbackReason ? ` (${fallbackReason})` : ""}
+          </p>
+        </div>
         <div>
           <span className="muted">훅</span>
           <p>{draft.hook_text}</p>

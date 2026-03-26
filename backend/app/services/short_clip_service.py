@@ -26,8 +26,25 @@ QUALITY_PRESETS: dict[str, dict[str, str]] = {
 }
 
 
-def _output_filename(output_kind: str) -> str:
-    return "preview_clip.mp4" if output_kind == "preview" else "short_clip.mp4"
+def _next_output_version(candidate: Candidate, output_kind: str) -> int:
+    metadata = dict(candidate.metadata_json or {})
+    editor_meta = dict(metadata.get("render_editor") or {})
+    raw_version = (
+        editor_meta.get("preview_clip_version")
+        if output_kind == "preview"
+        else metadata.get("short_clip_version")
+    )
+    try:
+        version = int(raw_version)
+    except (TypeError, ValueError):
+        version = 0
+    return version + 1
+
+
+def _output_filename(output_kind: str, version: int) -> str:
+    if output_kind == "preview":
+        return f"preview_clip_v{version}.mp4"
+    return f"short_clip_v{version}.mp4"
 
 
 def _preview_dimensions(width: int, height: int) -> tuple[int, int]:
@@ -53,7 +70,7 @@ def _build_video_filter(
     fit_mode: str,
     subtitle_filename: str | None,
     subtitle_is_vtt: bool = False,
-) -> str:
+) -> dict[str, object]:
     if fit_mode == "cover":
         base = (
             f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -123,12 +140,13 @@ def render_candidate_short_clip(
         raise ValueError("지원하지 않는 fit_mode 입니다.")
 
     duration = trim_end - trim_start
+    version = _next_output_version(candidate, output_kind)
     render_width, render_height = (
         _preview_dimensions(width, height) if output_kind == "preview" else (width, height)
     )
     out_dir = episode_root(candidate.episode_id) / "candidates" / candidate.id
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_mp4 = out_dir / _output_filename(output_kind)
+    out_mp4 = out_dir / _output_filename(output_kind, version)
     ass_path = out_dir / GENERATED_ASS
 
     imported: Path | None = None
@@ -219,4 +237,8 @@ def render_candidate_short_clip(
         err = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"ffmpeg 실패 (exit {proc.returncode}): {err[-4000:]}")
 
-    return str(out_mp4.resolve())
+    return {
+        "path": str(out_mp4.resolve()),
+        "version": version,
+        "output_kind": output_kind,
+    }

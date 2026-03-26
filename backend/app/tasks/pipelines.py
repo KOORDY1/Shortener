@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from celery import chain
 
 from app.core.celery_app import celery_app
@@ -155,7 +157,7 @@ def generate_script_drafts(
             if job is None:
                 raise ValueError("Job not found")
             mark_job_running(db, job, step="generate_script_drafts", progress_percent=25)
-            drafts = generate_script_drafts_for_candidate(
+            drafts, generation_meta = generate_script_drafts_for_candidate(
                 db,
                 candidate_id=candidate_id,
                 language=language,
@@ -167,6 +169,9 @@ def generate_script_drafts(
             payload = {
                 "candidate_id": candidate_id,
                 "script_draft_ids": [draft.id for draft in drafts],
+                "provider": generation_meta.get("provider"),
+                "fallback_reason": generation_meta.get("fallback_reason"),
+                "source_error": generation_meta.get("source_error"),
             }
             mark_job_succeeded(db, job, payload=payload)
             return payload
@@ -204,7 +209,7 @@ def render_short_clip_task(
             if candidate is None:
                 raise ValueError("Candidate not found")
             mark_job_running(db, job, step="ffmpeg_short_clip", progress_percent=10)
-            path = render_candidate_short_clip(
+            render_result = render_candidate_short_clip(
                 db,
                 candidate=candidate,
                 trim_start=trim_start,
@@ -220,14 +225,21 @@ def render_short_clip_task(
                 use_edited_ass=use_edited_ass,
                 output_kind=output_kind,
             )
+            path = str(render_result["path"])
+            version = int(render_result["version"])
+            rendered_at = datetime.now(timezone.utc).isoformat()
             md = dict(candidate.metadata_json or {})
             editor_meta = dict(md.get(RENDER_EDITOR_META_KEY) or {})
             if output_kind == "preview":
                 editor_meta["preview_clip_path"] = path
+                editor_meta["preview_clip_version"] = version
+                editor_meta["preview_clip_rendered_at"] = rendered_at
                 editor_meta.pop("preview_clip_error", None)
                 md[RENDER_EDITOR_META_KEY] = editor_meta
             else:
                 candidate.short_clip_path = path
+                md["short_clip_version"] = version
+                md["short_clip_rendered_at"] = rendered_at
                 md.pop("short_clip_error", None)
             candidate.metadata_json = md
             db.add(candidate)
@@ -235,6 +247,8 @@ def render_short_clip_task(
                 "candidate_id": candidate_id,
                 "output_kind": output_kind,
                 "clip_path": path,
+                "clip_version": version,
+                "rendered_at": rendered_at,
             }
             mark_job_succeeded(db, job, payload=payload)
             return payload

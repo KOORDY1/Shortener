@@ -381,6 +381,7 @@ class ScriptDraftResponse(BaseModel):
     estimated_duration_seconds: float
     title_options: list[str]
     is_selected: bool
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_model(cls, script_draft: ScriptDraft) -> "ScriptDraftResponse":
@@ -395,6 +396,7 @@ class ScriptDraftResponse(BaseModel):
             estimated_duration_seconds=script_draft.estimated_duration_seconds,
             title_options=script_draft.title_options or [],
             is_selected=script_draft.is_selected,
+            metadata=script_draft.metadata_json or {},
         )
 
 

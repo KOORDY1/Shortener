@@ -156,6 +156,7 @@ export type ScriptDraft = {
   estimated_duration_seconds: number;
   title_options: string[];
   is_selected: boolean;
+  metadata: Record<string, unknown>;
 };
 
 export type ScriptDraftListResponse = {

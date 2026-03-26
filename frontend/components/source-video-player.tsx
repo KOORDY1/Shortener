@@ -7,6 +7,8 @@ type Props = {
   episodeId: string;
   segmentStart?: number;
   segmentEnd?: number;
+  onSegmentStartChange?: (value: number) => void;
+  onSegmentEndChange?: (value: number) => void;
   showSegmentEditor?: boolean;
   /** 설정 시 업로드 VTT 또는 에피소드 자막(SRT/WebVTT) 기반 WebVTT를 `<track>`으로 겹칩니다(원본 타임라인). */
   webvttPreviewCandidateId?: string;
@@ -16,16 +18,14 @@ export function SourceVideoPlayer({
   episodeId,
   segmentStart = 0,
   segmentEnd,
+  onSegmentStartChange,
+  onSegmentEndChange,
   showSegmentEditor = false,
   webvttPreviewCandidateId
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const rangeKey = `${segmentStart}:${segmentEnd ?? "auto"}:${showSegmentEditor ? "editor" : "fixed"}`;
-  const [rangeDraft, setRangeDraft] = useState(() => ({
-    key: rangeKey,
-    startSec: segmentStart,
-    endSec: segmentEnd != null ? segmentEnd : segmentStart + 60
-  }));
+  const [startInput, setStartInput] = useState(() => String(segmentStart));
+  const [endInput, setEndInput] = useState(() => String(segmentEnd != null ? segmentEnd : segmentStart + 60));
   const [duration, setDuration] = useState(0);
 
   const src = `${apiBaseUrl}/episodes/${episodeId}/source-video`;
@@ -35,17 +35,15 @@ export function SourceVideoPlayer({
     key: sourceKey,
     message: null
   }));
-  const currentRange =
-    rangeDraft.key === rangeKey
-      ? rangeDraft
-      : {
-          key: rangeKey,
-          startSec: segmentStart,
-          endSec: segmentEnd != null ? segmentEnd : segmentStart + 60
-        };
-  const startSec = currentRange.startSec;
-  const endSec = currentRange.endSec;
   const error = errorState.key === sourceKey ? errorState.message : null;
+
+  useEffect(() => {
+    setStartInput(String(segmentStart));
+  }, [segmentStart]);
+
+  useEffect(() => {
+    setEndInput(String(segmentEnd != null ? segmentEnd : segmentStart + 60));
+  }, [segmentEnd, segmentStart]);
 
   const buildVideoErrorMessage = useCallback(() => {
     const mediaError = videoRef.current?.error;
@@ -63,8 +61,8 @@ export function SourceVideoPlayer({
     }
   }, []);
 
-  const previewT0 = showSegmentEditor ? startSec : segmentStart;
-  const previewT1 = showSegmentEditor ? endSec : segmentEnd ?? segmentStart + 1;
+  const previewT0 = segmentStart;
+  const previewT1 = segmentEnd ?? segmentStart + 1;
   const vttSrc =
     webvttPreviewCandidateId &&
     Number.isFinite(previewT0) &&
@@ -76,14 +74,14 @@ export function SourceVideoPlayer({
   const clampPlayback = useCallback(() => {
     const v = videoRef.current;
     if (!v || !bounded) return;
-    const start = showSegmentEditor ? startSec : segmentStart;
-    const end = showSegmentEditor ? endSec : (segmentEnd as number);
+    const start = segmentStart;
+    const end = segmentEnd as number;
     if (v.currentTime < start) v.currentTime = start;
     if (v.currentTime >= end) {
       v.pause();
       v.currentTime = start;
     }
-  }, [bounded, showSegmentEditor, startSec, endSec, segmentStart, segmentEnd]);
+  }, [bounded, segmentStart, segmentEnd]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -119,8 +117,8 @@ export function SourceVideoPlayer({
   function onPlay() {
     const v = videoRef.current;
     if (!v || !bounded) return;
-    const start = showSegmentEditor ? startSec : segmentStart;
-    const end = showSegmentEditor ? endSec : (segmentEnd as number);
+    const start = segmentStart;
+    const end = segmentEnd as number;
     if (v.currentTime < start || v.currentTime >= end) v.currentTime = start;
   }
 
@@ -163,14 +161,15 @@ export function SourceVideoPlayer({
                 step={0.1}
                 min={0}
                 max={duration || undefined}
-                value={startSec}
-                onChange={(e) =>
-                  setRangeDraft((prev) => ({
-                    key: rangeKey,
-                    startSec: parseFloat(e.target.value) || 0,
-                    endSec: prev.key === rangeKey ? prev.endSec : endSec
-                  }))
-                }
+                value={startInput}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setStartInput(nextValue);
+                  const parsed = Number.parseFloat(nextValue);
+                  if (Number.isFinite(parsed)) {
+                    onSegmentStartChange?.(parsed);
+                  }
+                }}
               />
             </label>
             <label className="field inline">
@@ -179,16 +178,17 @@ export function SourceVideoPlayer({
                 className="input narrow"
                 type="number"
                 step={0.1}
-                min={startSec}
+                min={segmentStart}
                 max={duration || undefined}
-                value={endSec}
-                onChange={(e) =>
-                  setRangeDraft((prev) => ({
-                    key: rangeKey,
-                    startSec: prev.key === rangeKey ? prev.startSec : startSec,
-                    endSec: parseFloat(e.target.value) || startSec
-                  }))
-                }
+                value={endInput}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setEndInput(nextValue);
+                  const parsed = Number.parseFloat(nextValue);
+                  if (Number.isFinite(parsed)) {
+                    onSegmentEndChange?.(parsed);
+                  }
+                }}
               />
             </label>
             <button
@@ -197,7 +197,7 @@ export function SourceVideoPlayer({
               onClick={() => {
                 const v = videoRef.current;
                 if (v) {
-                  v.currentTime = startSec;
+                  v.currentTime = segmentStart;
                   void v.play();
                 }
               }}

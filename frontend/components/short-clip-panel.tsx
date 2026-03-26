@@ -3,17 +3,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiBaseUrl } from "@/lib/api";
+import { AssEditor } from "@/components/short-clip/ass-editor";
+import { OutputPresetControls } from "@/components/short-clip/output-preset-controls";
+import { RenderActions } from "@/components/short-clip/render-actions";
+import { SubtitleSourceSelector } from "@/components/short-clip/subtitle-source-selector";
+import { TranscriptSubtitleEditor } from "@/components/short-clip/transcript-subtitle-editor";
+import { TrimControls } from "@/components/short-clip/trim-controls";
 import type {
   ShortClipRenderConfig,
   ShortClipSubtitleStyle,
   TranscriptSegment
 } from "@/lib/types";
-import { formatTimecode } from "@/lib/format";
 
 type Props = {
   candidateId: string;
-  startTime: number;
-  endTime: number;
+  trimStart: number;
+  trimEnd: number;
+  onTrimStartChange: (value: number) => void;
+  onTrimEndChange: (value: number) => void;
   shortClipPath?: string | null;
   shortClipError?: string | null;
   previewClipPath?: string | null;
@@ -114,8 +121,10 @@ function buildResolutionPreset(width?: number | null, height?: number | null) {
 
 export function ShortClipPanel({
   candidateId,
-  startTime,
-  endTime,
+  trimStart,
+  trimEnd,
+  onTrimStartChange,
+  onTrimEndChange,
   shortClipPath,
   shortClipError,
   previewClipPath,
@@ -127,10 +136,8 @@ export function ShortClipPanel({
   const router = useRouter();
   const savedSubtitleSource = (initialRenderConfig?.subtitle_source ?? "file") as SubtitleSource;
   const initialStyle = initialRenderConfig?.subtitle_style ?? DEFAULT_STYLE;
-  const [trimStart, setTrimStart] = useState(
-    String(initialRenderConfig?.trim_start ?? startTime)
-  );
-  const [trimEnd, setTrimEnd] = useState(String(initialRenderConfig?.trim_end ?? endTime));
+  const [trimStartInput, setTrimStartInput] = useState(() => String(trimStart));
+  const [trimEndInput, setTrimEndInput] = useState(() => String(trimEnd));
   const [subtitleSource, setSubtitleSource] = useState<SubtitleSource>(savedSubtitleSource);
   const [aspectRatio, setAspectRatio] = useState<AspectRatioPreset>(
     inferAspectRatio(initialRenderConfig?.aspect_ratio)
@@ -214,11 +221,21 @@ export function ShortClipPanel({
     };
   }, [assLoaded, candidateId, hasEditedAss, subtitleSource]);
 
-  const clipSrc = `${apiBaseUrl}/candidates/${candidateId}/short-clip/video`;
-  const previewClipSrc = `${apiBaseUrl}/candidates/${candidateId}/short-clip/preview/video`;
+  const clipCacheKey = encodeURIComponent(shortClipPath ?? "missing");
+  const previewClipCacheKey = encodeURIComponent(previewClipPath ?? "missing");
+  const clipSrc = `${apiBaseUrl}/candidates/${candidateId}/short-clip/video?v=${clipCacheKey}`;
+  const previewClipSrc = `${apiBaseUrl}/candidates/${candidateId}/short-clip/preview/video?v=${previewClipCacheKey}`;
 
-  const t0 = parseFloat(trimStart);
-  const t1 = parseFloat(trimEnd);
+  useEffect(() => {
+    setTrimStartInput(String(trimStart));
+  }, [trimStart]);
+
+  useEffect(() => {
+    setTrimEndInput(String(trimEnd));
+  }, [trimEnd]);
+
+  const t0 = trimStart;
+  const t1 = trimEnd;
   const { width, height } = useMemo(() => parseResolutionPreset(resolutionPreset), [resolutionPreset]);
   const visibleSegments = useMemo(() => {
     if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) return [];
@@ -407,354 +424,115 @@ export function ShortClipPanel({
         <p className="muted tiny">아직 렌더된 클립이 없습니다. 아래에서 실행하세요.</p>
       )}
       <div className="stack panel soft">
-        <div className="row wrap">
-          <label className="field inline">
-            <span className="muted">시작(초)</span>
-            <input
-              className="input narrow"
-              type="number"
-              step={0.1}
-              value={trimStart}
-              onChange={(e) => setTrimStart(e.target.value)}
-            />
-          </label>
-          <label className="field inline">
-            <span className="muted">끝(초)</span>
-            <input
-              className="input narrow"
-              type="number"
-              step={0.1}
-              value={trimEnd}
-              onChange={(e) => setTrimEnd(e.target.value)}
-            />
-          </label>
-        </div>
+        <TrimControls
+          trimStartInput={trimStartInput}
+          trimEndInput={trimEndInput}
+          onTrimStartInputChange={(nextValue) => {
+            setTrimStartInput(nextValue);
+            const parsed = Number.parseFloat(nextValue);
+            if (Number.isFinite(parsed)) {
+              onTrimStartChange(parsed);
+            }
+          }}
+          onTrimEndInputChange={(nextValue) => {
+            setTrimEndInput(nextValue);
+            const parsed = Number.parseFloat(nextValue);
+            if (Number.isFinite(parsed)) {
+              onTrimEndChange(parsed);
+            }
+          }}
+        />
 
-        <div className="stack panel soft">
-          <strong className="tiny">출력 프리셋</strong>
-          <div className="row wrap">
-            <label className="field inline">
-              <span className="muted">비율</span>
-              <select className="input" value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value as AspectRatioPreset)}>
-                {ASPECT_RATIO_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field inline">
-              <span className="muted">해상도</span>
-              <select className="input" value={resolutionPreset} onChange={(e) => setResolutionPreset(e.target.value)}>
-                {resolutionOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field inline">
-              <span className="muted">크롭/핏</span>
-              <select className="input" value={fitMode} onChange={(e) => setFitMode(e.target.value as FitMode)}>
-                {FIT_MODE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field inline">
-              <span className="muted">품질</span>
-              <select
-                className="input"
-                value={qualityPreset}
-                onChange={(e) => setQualityPreset(e.target.value as QualityPreset)}
-              >
-                {QUALITY_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <p className="muted tiny">
-            현재 출력: {width} x {height}. preview clip은 같은 비율과 자막/크롭 규칙을 유지한 채 더 작은 크기로
-            생성됩니다.
-          </p>
-        </div>
+        <OutputPresetControls
+          aspectRatio={aspectRatio}
+          resolutionPreset={resolutionPreset}
+          fitMode={fitMode}
+          qualityPreset={qualityPreset}
+          width={width}
+          height={height}
+          aspectRatioOptions={ASPECT_RATIO_OPTIONS}
+          resolutionOptions={resolutionOptions}
+          fitModeOptions={FIT_MODE_OPTIONS}
+          qualityOptions={QUALITY_OPTIONS}
+          onAspectRatioChange={setAspectRatio}
+          onResolutionPresetChange={setResolutionPreset}
+          onFitModeChange={setFitMode}
+          onQualityPresetChange={setQualityPreset}
+        />
 
-        <div className="stack panel soft">
-          <strong className="tiny">화면 자막 (영상에 번인)</strong>
-          <p className="muted tiny">
-            원하시는 방식 하나만 선택하세요. 스크립트 초안·음성 대본은 이 설정과 별개입니다.
-          </p>
-          <div className="stack" style={{ gap: 10 }}>
-            <label className="field row" style={{ alignItems: "flex-start", gap: 8 }}>
-              <input
-                type="radio"
-                name="subtitleSource"
-                checked={subtitleSource === "file"}
-                onChange={() => setSubtitleSource("file")}
-              />
-              <span>
-                <strong>영상 자막 파일</strong>
-                <span className="muted tiny" style={{ display: "block" }}>
-                  Aegisub 등에서 만든 .ass 또는 .vtt를 올리면 그대로 번인합니다. 타임코드는{" "}
-                  <strong>이 클립 구간 시작이 0초</strong>인 파일이어야 맞습니다.
-                </span>
-              </span>
-            </label>
-            <label className="field row" style={{ alignItems: "flex-start", gap: 8 }}>
-              <input
-                type="radio"
-                name="subtitleSource"
-                checked={subtitleSource === "transcript"}
-                onChange={() => setSubtitleSource("transcript")}
-              />
-              <span>
-                <strong>에피소드 자막에서 자동</strong>
-                <span className="muted tiny" style={{ display: "block" }}>
-                  새 업로드 시 함께 넣은 SRT/WebVTT를 구간에 맞게 SRT로 만들어 번인합니다. 없으면 자막이 비어
-                  있습니다. 아래에서 스타일·문구를 고칠 수 있습니다.
-                </span>
-              </span>
-            </label>
-            <label className="field row" style={{ alignItems: "flex-start", gap: 8 }}>
-              <input
-                type="radio"
-                name="subtitleSource"
-                checked={subtitleSource === "edited-ass"}
-                onChange={() => setSubtitleSource("edited-ass")}
-              />
-              <span>
-                <strong>ASS 원문 직접 편집</strong>
-                <span className="muted tiny" style={{ display: "block" }}>
-                  후보 단위로 저장한 raw ASS를 그대로 렌더합니다. 브라우저 플레이어는 ASS를 직접 그리지 못하므로,
-                  이 모드는 FFmpeg preview clip로 확인하는 편이 정확합니다.
-                </span>
-              </span>
-            </label>
-            <label className="field row" style={{ alignItems: "flex-start", gap: 8 }}>
-              <input
-                type="radio"
-                name="subtitleSource"
-                checked={subtitleSource === "none"}
-                onChange={() => setSubtitleSource("none")}
-              />
-              <span>
-                <strong>자막 없음</strong>
-                <span className="muted tiny" style={{ display: "block" }}>
-                  말풍선·자막 없이 영상만 출력합니다.
-                </span>
-              </span>
-            </label>
-          </div>
+        <SubtitleSourceSelector
+          subtitleSource={subtitleSource}
+          importMsg={importMsg}
+          onSubtitleSourceChange={setSubtitleSource}
+          onImportSubtitles={(fileList) => {
+            void onImportSubtitles(fileList);
+          }}
+        />
 
-          {subtitleSource === "file" ? (
-            <div className="stack" style={{ marginTop: 12 }}>
-              <div className="row wrap">
-                <label className="field inline row">
-                  <span className="muted">가져오기 (.ass / .vtt)</span>
-                  <input
-                    type="file"
-                    accept=".ass,.vtt"
-                    className="input"
-                    onChange={(e) => void onImportSubtitles(e.target.files)}
-                  />
-                </label>
-              </div>
-              {importMsg ? <p className="muted tiny">{importMsg}</p> : null}
-              <p className="muted tiny">
-                원본 플레이어 자막: 쇼츠용으로 가져온 .vtt가 있으면 그걸 쓰고, 없으면 에피소드 자막(원본
-                타임코드)입니다. ASS만 올린 경우 브라우저 트랙은 VTT를 따로 올리면 미리볼 수 있습니다.
-              </p>
-            </div>
-          ) : null}
-
-          {subtitleSource === "edited-ass" ? (
-            <div className="stack" style={{ marginTop: 12 }}>
-              <div className="row wrap">
-                <button type="button" className="button ghost" onClick={() => void downloadAss()}>
-                  현재 구간 ASS 템플릿 생성
-                </button>
-                <button type="button" className="button ghost" disabled={assBusy} onClick={() => void saveEditedAss()}>
-                  {assBusy ? "ASS 저장 중…" : "ASS 원문 저장"}
-                </button>
-              </div>
-              <textarea
-                className="textarea"
-                rows={16}
-                value={assText}
-                onChange={(e) => setAssText(e.target.value)}
-                placeholder="여기에 raw ASS를 붙여 넣거나 템플릿을 만든 뒤 편집하세요."
-              />
-              {assMsg ? <p className="muted tiny">{assMsg}</p> : null}
-            </div>
-          ) : null}
-
-          {subtitleSource === "transcript" ? (
-            <div className="stack" style={{ marginTop: 12 }}>
-              <p className="muted tiny">
-                대본을 바탕으로 ASS 템플릿을 받아 에디터에서 고친 뒤, 다시 「영상 자막 파일」로 가져와도
-                됩니다.
-              </p>
-              <div className="row wrap">
-                <button type="button" className="button ghost" onClick={() => void downloadAss()}>
-                  현재 구간 ASS보내기 (대본 기준)
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        {burnSubtitles && subtitleSource === "transcript" ? (
-          <div className="stack panel soft">
-            <strong className="tiny">자막 스타일 (ASS 생성용)</strong>
-            <div className="row wrap">
-              <label className="field inline">
-                <span className="muted">폰트</span>
-                <input className="input" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} />
-              </label>
-              <label className="field inline">
-                <span className="muted">글자 크기</span>
-                <input
-                  className="input narrow"
-                  type="number"
-                  min={10}
-                  max={80}
-                  value={fontSize}
-                  onChange={(e) => setFontSize(parseInt(e.target.value, 10) || 28)}
-                />
-              </label>
-              <label className="field inline">
-                <span className="muted">위치</span>
-                <select
-                  className="input"
-                  value={alignment}
-                  onChange={(e) => setAlignment(parseInt(e.target.value, 10))}
-                >
-                  {ALIGN_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field inline">
-                <span className="muted">상하 여백</span>
-                <input
-                  className="input narrow"
-                  type="number"
-                  min={0}
-                  max={400}
-                  value={marginV}
-                  onChange={(e) => setMarginV(parseInt(e.target.value, 10) || 0)}
-                />
-              </label>
-              <label className="field inline">
-                <span className="muted">외곽선</span>
-                <input
-                  className="input narrow"
-                  type="number"
-                  min={0}
-                  max={8}
-                  value={outline}
-                  onChange={(e) => setOutline(parseInt(e.target.value, 10) || 0)}
-                />
-              </label>
-              <label className="field inline">
-                <span className="muted">글자색</span>
-                <input
-                  className="input narrow"
-                  type="color"
-                  value={primaryColor}
-                  onChange={(e) => setPrimaryColor(e.target.value)}
-                />
-              </label>
-              <label className="field inline">
-                <span className="muted">외곽선 색</span>
-                <input
-                  className="input narrow"
-                  type="color"
-                  value={outlineColor}
-                  onChange={(e) => setOutlineColor(e.target.value)}
-                />
-              </label>
-              <label className="field inline">
-                <span className="muted">그림자</span>
-                <input
-                  className="input narrow"
-                  type="number"
-                  min={0}
-                  max={8}
-                  value={shadow}
-                  onChange={(e) => setShadow(parseInt(e.target.value, 10) || 0)}
-                />
-              </label>
-              <label className="field inline row">
-                <input type="checkbox" checked={bold} onChange={(e) => setBold(e.target.checked)} />
-                <span className="muted">굵게</span>
-              </label>
-              <label className="field inline row">
-                <input
-                  type="checkbox"
-                  checked={backgroundBox}
-                  onChange={(e) => setBackgroundBox(e.target.checked)}
-                />
-                <span className="muted">배경 박스</span>
-              </label>
-            </div>
-          </div>
+        {subtitleSource === "edited-ass" ? (
+          <AssEditor
+            assBusy={assBusy}
+            assMsg={assMsg}
+            assText={assText}
+            onAssTextChange={setAssText}
+            onDownloadAss={() => {
+              void downloadAss();
+            }}
+            onSaveEditedAss={() => {
+              void saveEditedAss();
+            }}
+          />
         ) : null}
 
-        {burnSubtitles && subtitleSource === "transcript" && visibleSegments.length > 0 ? (
-          <div className="stack">
-            <strong className="tiny">
-              자막 문구 편집 (구간 [{formatTimecode(t0)} – {formatTimecode(t1)}]과 겹치는 큐)
-            </strong>
-            <div className="stack" style={{ maxHeight: 280, overflowY: "auto", gap: 10 }}>
-              {visibleSegments.map((s) => (
-                <div key={s.id} className="panel soft">
-                  <div className="muted tiny">
-                    {formatTimecode(s.start_time)} – {formatTimecode(s.end_time)}
-                  </div>
-                  <textarea
-                    className="textarea"
-                    rows={2}
-                    value={cueEdits[s.id] ?? s.text}
-                    onChange={(e) =>
-                      setCueEdits((prev) => ({
-                        ...prev,
-                        [s.id]: e.target.value
-                      }))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
+        {burnSubtitles && subtitleSource === "transcript" ? (
+          <TranscriptSubtitleEditor
+            trimStart={t0}
+            trimEnd={t1}
+            fontFamily={fontFamily}
+            fontSize={fontSize}
+            alignment={alignment}
+            marginV={marginV}
+            outline={outline}
+            primaryColor={primaryColor}
+            outlineColor={outlineColor}
+            shadow={shadow}
+            backgroundBox={backgroundBox}
+            bold={bold}
+            alignOptions={ALIGN_OPTIONS}
+            visibleSegments={visibleSegments}
+            cueEdits={cueEdits}
+            onFontFamilyChange={setFontFamily}
+            onFontSizeChange={setFontSize}
+            onAlignmentChange={setAlignment}
+            onMarginVChange={setMarginV}
+            onOutlineChange={setOutline}
+            onPrimaryColorChange={setPrimaryColor}
+            onOutlineColorChange={setOutlineColor}
+            onShadowChange={setShadow}
+            onBackgroundBoxChange={setBackgroundBox}
+            onBoldChange={setBold}
+            onCueEditChange={(segmentId, text) =>
+              setCueEdits((prev) => ({
+                ...prev,
+                [segmentId]: text
+              }))
+            }
+            onDownloadAss={() => {
+              void downloadAss();
+            }}
+          />
         ) : null}
 
         {error ? <p className="muted" style={{ color: "var(--danger, #c00)" }}>{error}</p> : null}
-        <div className="row wrap">
-          <button
-            type="button"
-            className="button ghost"
-            disabled={busyAction !== null}
-            onClick={() => void submitRender("preview")}
-          >
-            {busyAction === "preview" ? "Preview 생성 중…" : "FFmpeg preview clip 생성"}
-          </button>
-          <button
-            type="button"
-            className="button primary"
-            disabled={busyAction !== null}
-            onClick={() => void submitRender("final")}
-          >
-            {busyAction === "final" ? "최종 렌더 큐 등록 중…" : "최종 쇼츠 렌더"}
-          </button>
-        </div>
+        <RenderActions
+          busyAction={busyAction}
+          onPreview={() => {
+            void submitRender("preview");
+          }}
+          onFinal={() => {
+            void submitRender("final");
+          }}
+        />
       </div>
     </div>
   );

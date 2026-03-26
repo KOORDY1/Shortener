@@ -18,6 +18,7 @@ from app.services.analysis_metadata import mark_analysis_completed, mark_analysi
 from app.services.storage_service import episode_root, write_placeholder
 from app.services.candidate_generation import build_candidates_for_episode, dedupe_scored_windows
 from app.services.keyframe_extraction import extract_keyframes_for_episode
+from app.services.media_probe import probe_media_metadata
 from app.services.proxy_transcoding import ensure_analysis_proxy
 from app.services.shot_detection import (
     deserialize_shot_intervals,
@@ -49,21 +50,38 @@ def ingest_episode_step(db: Session, episode_id: str) -> dict:
     if not Path(episode.source_video_path).exists():
         raise FileNotFoundError("Source video file is missing")
 
+    probe_summary = probe_media_metadata(Path(episode.source_video_path))
+    probe_ok = probe_summary.get("status") == "ok"
     episode.status = EpisodeStatus.PROCESSING.value
-    episode.duration_seconds = episode.duration_seconds or 42.0
-    episode.fps = episode.fps or 23.976
-    episode.width = episode.width or 1920
-    episode.height = episode.height or 1080
-    episode.metadata_json = {
-        **(episode.metadata_json or {}),
-        "ingest_mode": "mock",
-        "source_verified": True,
+    episode.duration_seconds = float(probe_summary["duration_seconds"] or episode.duration_seconds or 42.0)
+    episode.fps = float(probe_summary["fps"] or episode.fps or 23.976)
+    episode.width = int(probe_summary["width"] or episode.width or 1920)
+    episode.height = int(probe_summary["height"] or episode.height or 1080)
+
+    metadata = dict(episode.metadata_json or {})
+    metadata["ingest_mode"] = "ffprobe" if probe_ok else "fallback"
+    metadata["source_verified"] = True
+    metadata["media_probe"] = {
+        "status": probe_summary.get("status"),
+        "error": probe_summary.get("error"),
+        "duration_seconds": probe_summary.get("duration_seconds"),
+        "fps": probe_summary.get("fps"),
+        "width": probe_summary.get("width"),
+        "height": probe_summary.get("height"),
+        "video_stream_found": probe_summary.get("video_stream_found"),
     }
+    episode.metadata_json = metadata
     mark_analysis_running(episode, "ingest_episode")
     mark_analysis_completed(
         episode,
         "ingest_episode",
-        step_details={"mode": "mock", "source_verified": True},
+        step_details={
+            "mode": metadata["ingest_mode"],
+            "source_verified": True,
+            "media_probe_status": probe_summary.get("status"),
+            "video_stream_found": probe_summary.get("video_stream_found"),
+            "fallback_used": not probe_ok,
+        },
     )
     db.add(episode)
     db.commit()
