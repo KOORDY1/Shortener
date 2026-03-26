@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,12 @@ QUALITY_PRESETS: dict[str, dict[str, str]] = {
     "standard": {"preset": "fast", "crf": "23", "audio_bitrate": "128k"},
     "high": {"preset": "medium", "crf": "20", "audio_bitrate": "160k"},
 }
+
+
+class ShortClipRenderResult(TypedDict):
+    path: str
+    version: int
+    output_kind: str
 
 
 def _next_output_version(candidate: Candidate, output_kind: str) -> int:
@@ -70,7 +76,7 @@ def _build_video_filter(
     fit_mode: str,
     subtitle_filename: str | None,
     subtitle_is_vtt: bool = False,
-) -> dict[str, object]:
+) -> str:
     if fit_mode == "cover":
         base = (
             f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -112,7 +118,7 @@ def render_candidate_short_clip(
     use_imported_subtitles: bool = False,
     use_edited_ass: bool = False,
     output_kind: str = "final",
-) -> str:
+) -> ShortClipRenderResult:
     if not shutil.which("ffmpeg"):
         raise RuntimeError(
             "ffmpeg가 PATH에 없습니다. Docker 이미지에 ffmpeg를 설치했는지 확인하세요."

@@ -189,7 +189,11 @@ def generate_script_drafts_for_candidate(
         )
     )
     if existing and not force_regenerate:
-        return existing
+        return existing, {
+            "provider": "existing",
+            "fallback_reason": None,
+            "source_error": None,
+        }
 
     if force_regenerate and existing:
         db.execute(delete(ScriptDraft).where(ScriptDraft.candidate_id == candidate_id))
