@@ -16,6 +16,7 @@ from app.db.models import (
 )
 from app.services.analysis_metadata import mark_analysis_completed, mark_analysis_running
 from app.services.candidate_spans import candidate_clip_spans, clip_spans_total_duration
+from app.services.candidate_rerank import rerank_candidates_for_episode
 from app.services.storage_service import episode_root, write_placeholder
 from app.services.candidate_generation import build_candidates_for_episode, dedupe_scored_windows
 from app.services.composite_candidate_generation import build_composite_candidates
@@ -385,6 +386,11 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
     mark_analysis_running(episode, "generate_candidates")
     scored_windows = build_candidates_for_episode(db, episode_id)
     scored_windows.extend(build_composite_candidates(scored_windows))
+    scored_windows = rerank_candidates_for_episode(
+        scored_windows,
+        provider="heuristic_noop",
+        reason="pre_vision_candidate_rerank_hook",
+    )
     scored_windows, vision_summary = refine_candidates_with_vision(
         db,
         episode,

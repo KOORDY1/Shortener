@@ -63,9 +63,94 @@ def run() -> None:
 
     from fastapi.testclient import TestClient
 
-    from app.services.candidate_generation import ScoredWindow
+    from app.db.models import TranscriptSegment
+    from app.services.candidate_events import CandidateEvent
+    from app.services.candidate_generation import ScoredWindow, WindowSeed, dedupe_scored_windows, score_window
+    from app.services.candidate_language_signals import extract_tokens, tone_signals
     from app.services.composite_candidate_generation import build_composite_candidates
     from app.main import create_app
+
+    english_signals = tone_signals("What? No way, seriously, that's ridiculous. I am sorry, but I told you.")
+    assert english_signals["comedy_signal"] > 0
+    assert english_signals["emotion_signal"] > 0
+    assert english_signals["reaction_signal"] > 0
+
+    question_event = CandidateEvent(
+        start_time=0.0,
+        end_time=16.0,
+        text="Why would you do that?",
+        cue_count=2,
+        shot_count=2,
+        event_kind="question",
+        tone_signals=tone_signals("Why would you do that?"),
+        tokens=extract_tokens("Why would you do that?"),
+        dominant_entities=["you"],
+        source_segments=[],
+    )
+    answer_event = CandidateEvent(
+        start_time=16.0,
+        end_time=34.0,
+        text="Because I told you already. Seriously, that is the whole point.",
+        cue_count=3,
+        shot_count=2,
+        event_kind="payoff",
+        tone_signals=tone_signals("Because I told you already. Seriously, that is the whole point."),
+        tokens=extract_tokens("Because I told you already. Seriously, that is the whole point."),
+        dominant_entities=["you"],
+        source_segments=[],
+    )
+    structure_window = score_window(
+        WindowSeed(
+            start_time=0.0,
+            end_time=34.0,
+            events=[question_event, answer_event],
+            window_reason="question_answer",
+        ),
+        segments=[
+            TranscriptSegment(
+                id="seg-1",
+                episode_id="episode",
+                segment_index=1,
+                start_time=0.0,
+                end_time=16.0,
+                text="Why would you do that?",
+                speaker_label=None,
+            ),
+            TranscriptSegment(
+                id="seg-2",
+                episode_id="episode",
+                segment_index=2,
+                start_time=16.0,
+                end_time=34.0,
+                text="Because I told you already. Seriously, that is the whole point.",
+                speaker_label=None,
+            ),
+        ],
+        shots=[],
+    )
+    assert structure_window is not None
+    assert structure_window.metadata_json["question_answer_score"] > 0.4
+    assert structure_window.metadata_json["payoff_end_weight"] > 0.2
+    assert structure_window.metadata_json["ranking_focus"] in {"setup_payoff", "argument_turn", "reaction_turn"}
+
+    short_punchy = ScoredWindow(
+        start_time=0.0,
+        end_time=32.0,
+        total_score=9.4,
+        scores_json={"total_score": 9.4},
+        title_hint="short punchy",
+        metadata_json={"transcript_excerpt": "short punchy", "dedupe_tokens": ["short", "punchy"]},
+    )
+    long_soft = ScoredWindow(
+        start_time=40.0,
+        end_time=120.0,
+        total_score=8.1,
+        scores_json={"total_score": 8.1},
+        title_hint="long soft",
+        metadata_json={"transcript_excerpt": "long soft", "dedupe_tokens": ["long", "soft"]},
+    )
+    deduped_order = dedupe_scored_windows([long_soft, short_punchy], limit=2)
+    assert deduped_order[0].title_hint == "short punchy"
 
     app = create_app()
     with TestClient(app) as client:
@@ -216,31 +301,57 @@ def run() -> None:
             [
                 ScoredWindow(
                     start_time=10.0,
-                    end_time=24.0,
+                    end_time=42.0,
                     total_score=8.9,
                     scores_json={"total_score": 8.9},
                     title_hint="setup",
                     metadata_json={
                         "dedupe_tokens": ["리처드", "투자", "제안"],
+                        "dominant_entities": ["리처드", "투자"],
                         "ranking_focus": "comedy_or_emotion",
                         "transcript_excerpt": "리처드가 투자 제안을 듣는다",
+                        "source_events": [
+                            {
+                                "start_time": 10.0,
+                                "end_time": 24.0,
+                                "event_kind": "question",
+                                "text": "투자를 받을 생각이 있나?",
+                                "tone_signals": {"question_signal": 0.9},
+                                "dominant_entities": ["리처드", "투자"],
+                            }
+                        ],
+                        "question_answer_score": 0.8,
                     },
                 ),
                 ScoredWindow(
-                    start_time=52.0,
-                    end_time=67.0,
+                    start_time=58.0,
+                    end_time=88.0,
                     total_score=8.7,
                     scores_json={"total_score": 8.7},
                     title_hint="payoff",
                     metadata_json={
                         "dedupe_tokens": ["리처드", "투자", "거절"],
+                        "dominant_entities": ["리처드", "투자"],
                         "ranking_focus": "comedy_or_emotion",
                         "transcript_excerpt": "리처드가 투자 제안을 거절한다",
+                        "source_events": [
+                            {
+                                "start_time": 58.0,
+                                "end_time": 72.0,
+                                "event_kind": "reaction",
+                                "text": "정말 그 제안을 거절한다고?",
+                                "tone_signals": {"reaction_signal": 0.8},
+                                "dominant_entities": ["리처드", "투자"],
+                            }
+                        ],
+                        "payoff_end_weight": 0.7,
+                        "reaction_shift_score": 0.65,
                     },
                 ),
             ]
         )
         assert composite_candidates, "Expected composite heuristic to produce at least one pair"
+        assert composite_candidates[0].metadata_json.get("pair_reason")
 
         print(
             json.dumps(
