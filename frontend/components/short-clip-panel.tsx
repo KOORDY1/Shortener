@@ -14,6 +14,7 @@ import type {
   ShortClipSubtitleStyle,
   TranscriptSegment
 } from "@/lib/types";
+import { formatPreciseTimecode, parseTimecodeInput } from "@/lib/format";
 
 type Props = {
   candidateId: string;
@@ -136,8 +137,8 @@ export function ShortClipPanel({
   const router = useRouter();
   const savedSubtitleSource = (initialRenderConfig?.subtitle_source ?? "file") as SubtitleSource;
   const initialStyle = initialRenderConfig?.subtitle_style ?? DEFAULT_STYLE;
-  const [trimStartInput, setTrimStartInput] = useState(() => String(trimStart));
-  const [trimEndInput, setTrimEndInput] = useState(() => String(trimEnd));
+  const [trimStartInput, setTrimStartInput] = useState(() => formatPreciseTimecode(trimStart));
+  const [trimEndInput, setTrimEndInput] = useState(() => formatPreciseTimecode(trimEnd));
   const [subtitleSource, setSubtitleSource] = useState<SubtitleSource>(savedSubtitleSource);
   const [aspectRatio, setAspectRatio] = useState<AspectRatioPreset>(
     inferAspectRatio(initialRenderConfig?.aspect_ratio)
@@ -227,11 +228,11 @@ export function ShortClipPanel({
   const previewClipSrc = `${apiBaseUrl}/candidates/${candidateId}/short-clip/preview/video?v=${previewClipCacheKey}`;
 
   useEffect(() => {
-    setTrimStartInput(String(trimStart));
+    setTrimStartInput(formatPreciseTimecode(trimStart));
   }, [trimStart]);
 
   useEffect(() => {
-    setTrimEndInput(String(trimEnd));
+    setTrimEndInput(formatPreciseTimecode(trimEnd));
   }, [trimEnd]);
 
   const t0 = trimStart;
@@ -429,15 +430,15 @@ export function ShortClipPanel({
           trimEndInput={trimEndInput}
           onTrimStartInputChange={(nextValue) => {
             setTrimStartInput(nextValue);
-            const parsed = Number.parseFloat(nextValue);
-            if (Number.isFinite(parsed)) {
+            const parsed = parseTimecodeInput(nextValue);
+            if (parsed != null) {
               onTrimStartChange(parsed);
             }
           }}
           onTrimEndInputChange={(nextValue) => {
             setTrimEndInput(nextValue);
-            const parsed = Number.parseFloat(nextValue);
-            if (Number.isFinite(parsed)) {
+            const parsed = parseTimecodeInput(nextValue);
+            if (parsed != null) {
               onTrimEndChange(parsed);
             }
           }}

@@ -26,16 +26,16 @@ class Settings(BaseSettings):
     celery_result_backend: str = "cache+memory://"
     celery_task_always_eager: bool = True
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4.1-mini"
+    openai_model: str = "gpt-4.1"
     allow_mock_llm_fallback: bool = True
     # true이면 분석 파이프라인에서 후보 목록을 OpenAI로 재조정(자막 발췌만 전달, 영상 바이너리 없음)
     candidate_rerank_llm: bool = False
     # 멀티모달 후보 재랭크(프레임+자막)를 켭니다. legacy CANDIDATE_RERANK_LLM=true 도 허용합니다.
-    vision_candidate_rerank: bool = False
-    vision_max_candidates_per_episode: int = 4
-    vision_max_frames_per_candidate: int = 4
+    vision_candidate_rerank: bool = True
+    vision_max_candidates_per_episode: int = 8
+    vision_max_frames_per_candidate: int = 6
     vision_image_max_width: int = 640
-    vision_model: str = "gpt-4.1-mini"
+    vision_model: str = "gpt-4.1"
     vision_prompt_version: str = "vision_candidate_rerank_v1"
     vision_scan_version: str = "vision_scan_v1"
     analysis_pipeline_version: str = "analysis_pipeline_v2"

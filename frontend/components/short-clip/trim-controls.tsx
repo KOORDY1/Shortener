@@ -16,21 +16,19 @@ export function TrimControls({
   return (
     <div className="row wrap">
       <label className="field inline">
-        <span className="muted">시작(초)</span>
+        <span className="muted">시작(MM:SS.SSS)</span>
         <input
           className="input narrow"
-          type="number"
-          step={0.1}
+          type="text"
           value={trimStartInput}
           onChange={(e) => onTrimStartInputChange(e.target.value)}
         />
       </label>
       <label className="field inline">
-        <span className="muted">끝(초)</span>
+        <span className="muted">끝(MM:SS.SSS)</span>
         <input
           className="input narrow"
-          type="number"
-          step={0.1}
+          type="text"
           value={trimEndInput}
           onChange={(e) => onTrimEndInputChange(e.target.value)}
         />

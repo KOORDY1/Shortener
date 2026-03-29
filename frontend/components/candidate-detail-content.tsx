@@ -10,7 +10,7 @@ import { SourceVideoPlayer } from "@/components/source-video-player";
 import { CandidateGenerateScriptsButton } from "@/components/mutation-buttons";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
-import { formatDuration, formatTimecode } from "@/lib/format";
+import { formatDuration, formatPreciseTimecode, formatTimecode } from "@/lib/format";
 import { scoreKeyLabel } from "@/lib/labels";
 import type {
   CandidateDetail,
@@ -121,7 +121,7 @@ export function CandidateDetailContent({
         <div className="kpi">
           <span className="muted">구간</span>
           <strong>
-            {formatTimecode(candidate.start_time)} - {formatTimecode(candidate.end_time)}
+            {formatPreciseTimecode(candidate.start_time)} - {formatPreciseTimecode(candidate.end_time)}
           </strong>
         </div>
         <div className="kpi">

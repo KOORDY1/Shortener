@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiBaseUrl } from "@/lib/api";
+import { formatPreciseTimecode, parseTimecodeInput } from "@/lib/format";
 
 type Props = {
   episodeId: string;
@@ -28,9 +29,10 @@ export function SourceVideoPlayer({
   webvttPreviewCandidateId
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [startInput, setStartInput] = useState(() => String(segmentStart));
-  const [endInput, setEndInput] = useState(() => String(segmentEnd != null ? segmentEnd : segmentStart + 60));
-  const [duration, setDuration] = useState(0);
+  const [startInput, setStartInput] = useState(() => formatPreciseTimecode(segmentStart));
+  const [endInput, setEndInput] = useState(() =>
+    formatPreciseTimecode(segmentEnd != null ? segmentEnd : segmentStart + 60)
+  );
 
   const src = `${apiBaseUrl}/episodes/${episodeId}/source-video`;
   const bounded = segmentEnd != null || showSegmentEditor;
@@ -42,11 +44,11 @@ export function SourceVideoPlayer({
   const error = errorState.key === sourceKey ? errorState.message : null;
 
   useEffect(() => {
-    setStartInput(String(segmentStart));
+    setStartInput(formatPreciseTimecode(segmentStart));
   }, [segmentStart]);
 
   useEffect(() => {
-    setEndInput(String(segmentEnd != null ? segmentEnd : segmentStart + 60));
+    setEndInput(formatPreciseTimecode(segmentEnd != null ? segmentEnd : segmentStart + 60));
   }, [segmentEnd, segmentStart]);
 
   const buildVideoErrorMessage = useCallback(() => {
@@ -99,8 +101,6 @@ export function SourceVideoPlayer({
     const v = videoRef.current;
     if (!v) return;
     const onMeta = () => {
-      const d = v.duration;
-      if (Number.isFinite(d)) setDuration(d);
       setErrorState({ key: sourceKey, message: null });
     };
     const onCanPlay = () => setErrorState({ key: sourceKey, message: null });
@@ -166,38 +166,32 @@ export function SourceVideoPlayer({
           </p>
           <div className="row wrap">
             <label className="field inline">
-              <span className="muted">시작(초)</span>
+              <span className="muted">시작(MM:SS.SSS)</span>
               <input
                 className="input narrow"
-                type="number"
-                step={0.1}
-                min={0}
-                max={duration || undefined}
+                type="text"
                 value={startInput}
                 onChange={(e) => {
                   const nextValue = e.target.value;
                   setStartInput(nextValue);
-                  const parsed = Number.parseFloat(nextValue);
-                  if (Number.isFinite(parsed)) {
+                  const parsed = parseTimecodeInput(nextValue);
+                  if (parsed != null) {
                     onSegmentStartChange?.(parsed);
                   }
                 }}
               />
             </label>
             <label className="field inline">
-              <span className="muted">끝(초)</span>
+              <span className="muted">끝(MM:SS.SSS)</span>
               <input
                 className="input narrow"
-                type="number"
-                step={0.1}
-                min={segmentStart}
-                max={duration || undefined}
+                type="text"
                 value={endInput}
                 onChange={(e) => {
                   const nextValue = e.target.value;
                   setEndInput(nextValue);
-                  const parsed = Number.parseFloat(nextValue);
-                  if (Number.isFinite(parsed)) {
+                  const parsed = parseTimecodeInput(nextValue);
+                  if (parsed != null) {
                     onSegmentEndChange?.(parsed);
                   }
                 }}

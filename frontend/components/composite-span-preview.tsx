@@ -1,6 +1,6 @@
 "use client";
 
-import { formatDuration, formatTimecode } from "@/lib/format";
+import { formatDuration, formatPreciseTimecode, formatTimecode } from "@/lib/format";
 import type { ClipSpan, Shot } from "@/lib/types";
 
 type Props = {
@@ -36,7 +36,7 @@ export function CompositeSpanPreview({
                 {isActive ? <span className="badge running">현재 span</span> : null}
               </div>
               <div className="muted">
-                {formatTimecode(span.start_time)} - {formatTimecode(span.end_time)} /{" "}
+                {formatPreciseTimecode(span.start_time)} - {formatPreciseTimecode(span.end_time)} /{" "}
                 {formatDuration(span.end_time - span.start_time)}
               </div>
               {relatedShots.length > 0 ? (

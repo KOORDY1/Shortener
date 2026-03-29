@@ -16,10 +16,10 @@ from sqlalchemy.orm import Session
 from app.db.models import Episode, Shot, TranscriptSegment
 
 # 쇼츠에 맞는 구간 길이(초)
-MIN_WINDOW_SEC = 10.0
+MIN_WINDOW_SEC = 30.0
 MAX_WINDOW_SEC = 180.0
-OPTIMAL_DURATION_SEC = 28.0
-DURATION_SIGMA_SEC = 14.0
+OPTIMAL_DURATION_SEC = 36.0
+DURATION_SIGMA_SEC = 16.0
 
 MAX_CANDIDATES = 14
 SLIDE_STEP_SEC = 4.0
@@ -391,7 +391,7 @@ def _enumerate_windows(
         seen.add(key)
         out.append((a, b))
 
-    target_durs = [16.0, 22.0, 28.0, 34.0, 42.0, 52.0, 64.0, 80.0, 100.0, 130.0, 160.0, 180.0]
+    target_durs = [30.0, 36.0, 42.0, 52.0, 64.0, 80.0, 100.0, 130.0, 160.0, 180.0]
     t = 0.0
     while t < t_end - MIN_WINDOW_SEC + 1e-6:
         for d in target_durs:
@@ -470,9 +470,38 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
             scored.append(sw)
 
     if not scored:
-        mid = min(OPTIMAL_DURATION_SEC, max(MIN_WINDOW_SEC, t_end * 0.35))
-        fallback = score_window(0.0, min(mid, t_end), segments, shots)
-        if fallback:
-            scored.append(fallback)
+        # smoke test처럼 소스 자체가 30초 미만인 경우에는 전체 구간을 후보 1개로 유지한다.
+        if t_end < MIN_WINDOW_SEC:
+            excerpt = _excerpt_from_segments(segments, 0.0, t_end)
+            scored.append(
+                ScoredWindow(
+                    start_time=0.0,
+                    end_time=round(t_end, 3),
+                    total_score=6.0,
+                    scores_json={
+                        "total_score": 6.0,
+                        "hook_score": 6.0,
+                        "clarity_score": 6.0,
+                        "commentary_score": 6.0,
+                        "comedy_score": 5.0,
+                        "emotion_score": 5.0,
+                        "speech_coverage": round(_merged_speech_coverage(segments, 0.0, t_end), 3),
+                        "chars_per_sec": round(_chars_in_window(segments, 0.0, t_end) / max(t_end, 1.0), 2),
+                        "cuts_inside": float(_cuts_inside(shots, 0.0, t_end)),
+                    },
+                    title_hint=_title_from_segments(segments, 0.0, t_end),
+                    metadata_json={
+                        "generated_by": "heuristic_short_episode_fallback_v1",
+                        "window_duration_sec": round(t_end, 3),
+                        "transcript_excerpt": excerpt,
+                        "dedupe_tokens": _text_tokens(excerpt)[:12],
+                        "ranking_focus": "short_episode_fallback",
+                    },
+                )
+            )
+        else:
+            fallback = score_window(0.0, min(max(MIN_WINDOW_SEC, OPTIMAL_DURATION_SEC), t_end), segments, shots)
+            if fallback:
+                scored.append(fallback)
 
     return _nms(scored)
