@@ -5,6 +5,16 @@
 
 ---
 
+> **남은 핵심 과제 (다음 우선순위)**
+>
+> 1. **단위 테스트 작성** — tone_signals·QA 스코어·Arc 탐색·IOU dedup 4개 케이스 (`§8.2`)
+> 2. **통합 테스트 구현** — 실 SRT+영상 파이프라인 E2E 테스트 (`§8.3`)
+> 3. **평가셋 기반 스코어링 가중치 튜닝** — 실 드라마 에피소드로 Recall@K 측정 후 ScoringWeights 프로파일 최적화
+> 4. **Speaker Diarization 도입 검토** — pyannote.audio 의존성 평가 후 화자 레이블 품질 개선
+> 5. **YouTube 자동 업로드** — 채널 할당량 확인 후 구현 (`§8.6` 설계 완료)
+
+---
+
 ## 목차
 
 1. [현재 구현 상태 진단](#1-현재-구현-상태-진단)
@@ -14,10 +24,12 @@
 5. [Phase 3 — 스코어링 시스템 상세](#5-phase-3--스코어링-시스템-상세)
 6. [Phase 4 — Vision·LLM 정제](#6-phase-4--visionllm-정제)
 7. [Phase 5 — 렌더링 파이프라인 완성](#7-phase-5--렌더링-파이프라인-완성)
-8. [미구현 항목 구체적 구현 계획](#8-미구현-항목-구체적-구현-계획)
-9. [테스트 전략](#9-테스트-전략)
-10. [우선순위 로드맵](#10-우선순위-로드맵)
-11. [Live Path 연결 구현 결과](#11-live-path-연결-구현-결과)
+8. [테스트 전략](#8-테스트-전략)
+9. [변경 이력 / 최근 구현 요약](#9-변경-이력--최근-구현-요약)
+- [부록 A. 핵심 데이터 구조](#부록-a-핵심-데이터-구조)
+- [부록 B. 환경 설정 빠른 참조](#부록-b-환경-설정-빠른-참조)
+- [부록 C. Canonical Schema & Vocabulary](#부록-c-canonical-schema--vocabulary-고정-인터페이스)
+- [부록 D. 기술 분석 상세](#부록-d-기술-분석-상세)
 
 ---
 
@@ -70,7 +82,7 @@
 | 저작권 감지 | 내부 편집 보조 도구 범위를 벗어남 |
 | 실시간 협업 | 현재 운영 규모에서 불필요 |
 | 완전 무인 자동 배포 | 사람의 검수가 필수 |
-| YouTube/SNS 자동 업로드 | 타당성 조사 후 결정 (Section 8.7 참조) |
+| YouTube/SNS 자동 업로드 | 타당성 조사 후 결정 (Section 9 참조) |
 | Speaker Diarization | pyannote.audio 의존성 크므로 필요성 검증 후 |
 
 ### 1.4 핵심 제약값
@@ -285,7 +297,7 @@ def parse_srt(text: str) -> list[SubtitleCue]:
     return cues
 ```
 
-**현재 한계:** SRT/WebVTT 업로드 파일만 지원. ASR 통합 계획은 Section 8.1 참조.
+SRT/WebVTT 업로드 파일 지원. ASR 미설정 시 자막 없이도 파이프라인 실행 가능 (빈 segment 목록).
 
 ---
 
@@ -723,7 +735,7 @@ def dominant_entities(tokens: list[str], *, limit: int = 5) -> list[str]:
     """_PRONOUN_STOP 필터 + len >= 2 조건. raw token stream 입력 필요."""
 ```
 
-#### ML 기반 임베딩 시그널 (신규)
+#### ML 기반 임베딩 시그널
 
 ```python
 class EmbeddingSignals(TypedDict):
@@ -903,392 +915,9 @@ EXPORT_PRESETS = {
 
 ---
 
-## 8. 미구현 항목 구체적 구현 계획
+## 8. 테스트 전략
 
-### 8.1 ASR 통합 (Whisper) — ✅ 완료
-
-**목적:** SRT 파일 없이도 분석 파이프라인 실행 가능.
-
-```python
-# 새 파일: backend/app/services/asr_service.py
-import whisper
-
-def transcribe_with_whisper(
-    audio_path: Path,
-    *,
-    model_size: str = "medium",
-    language: str = "ko",
-    initial_prompt: str = "",   # 도메인 힌트 ("드라마 대사" 등)
-) -> list[SubtitleCue]:
-    model = whisper.load_model(model_size)
-    result = model.transcribe(
-        str(audio_path),
-        language=language,
-        initial_prompt=initial_prompt,
-        word_timestamps=True,
-        condition_on_previous_text=False,  # 드라마에서 더 안정적
-        compression_ratio_threshold=2.2,
-        no_speech_threshold=0.6,
-    )
-    return [
-        SubtitleCue(start=seg["start"], end=seg["end"], text=seg["text"].strip())
-        for seg in result["segments"]
-    ]
-```
-
-**`extract_or_generate_transcript_step()` 수정 포인트 (`analysis_service.py`):**
-
-```python
-def extract_or_generate_transcript_step(db, payload):
-    episode = db.get(Episode, payload["episode_id"])
-
-    if episode.source_subtitle_path:
-        cues = parse_subtitle_file(episode.source_subtitle_path)
-        source = "uploaded_subtitle"
-    elif settings.asr_enabled:   # 새 설정값
-        from app.services.asr_service import transcribe_with_whisper
-        audio_path = resolve_audio_path(episode)
-        cues = transcribe_with_whisper(
-            audio_path,
-            model_size=settings.whisper_model_size,
-            language=settings.default_language,
-        )
-        source = f"whisper_{settings.whisper_model_size}"
-    else:
-        cues = []
-        source = "none"
-
-    _save_transcript_segments(db, episode.id, cues)
-    episode.metadata_json = {**episode.metadata_json, "transcript_source": source}
-```
-
-**추가할 설정값 (`core/config.py`):**
-```python
-asr_enabled: bool = False
-whisper_model_size: str = "medium"   # tiny/base/small/medium/large
-default_language: str = "ko"
-```
-
-**성능 기준:**
-- `medium` 모델: 45분 에피소드 약 5–8분 (CPU), 1–2분 (GPU)
-- `faster-whisper` 라이브러리 사용 시 2–4× 가속 가능
-- ASR 결과 캐싱: `metadata_json["asr_cache_key"]` = 오디오 파일 서명
-
----
-
-### 8.2 LLM Arc Judge 구현 — ✅ 완료
-
-```python
-# candidate_rerank.py - llm_arc_judge() 실제 구현
-ARC_JUDGE_SYSTEM_PROMPT = """
-당신은 한국 드라마 쇼츠 편집 전문가입니다.
-클립 후보의 대사 발췌문을 읽고 JSON으로 평가하세요.
-
-반환 형식:
-{
-  "arc_closed": bool,      // setup→payoff 명확히 닫히는가?
-  "standalone": 0-10,      // 앞뒤 맥락 없이 이해 가능한가?
-  "shorts_fit": 0-10,      // 30~75초 쇼츠로 적합한가?
-  "adjustment": -1.0~1.0,  // 점수 조정값
-  "reason": "..."          // 한국어 판단 이유 (최대 120자)
-}
-"""
-
-def llm_arc_judge(windows, *, top_k=5, provider="openai"):
-    client = OpenAI(api_key=settings.openai_api_key)
-
-    for i, window in enumerate(windows[:top_k]):
-        excerpt = window.metadata_json.get("transcript_excerpt", "")
-        context = {
-            "title_hint": window.title_hint,
-            "duration_sec": window.end_time - window.start_time,
-            "heuristic_score": window.total_score,
-            "window_reason": window.metadata_json.get("window_reason"),
-            "transcript_excerpt": excerpt[:600],
-        }
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",   # 비용 효율적
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": ARC_JUDGE_SYSTEM_PROMPT},
-                {"role": "user",   "content": json.dumps(context, ensure_ascii=False)},
-            ],
-            temperature=0.1, max_tokens=300,
-        )
-        payload = json.loads(response.choices[0].message.content)
-        delta = clamp(float(payload.get("adjustment", 0.0)), -1.0, 1.0)
-        windows[i] = _apply_llm_adjustment(windows[i], delta, payload)
-
-    return windows
-```
-
----
-
-### 8.3 TTS 렌더링 — ✅ 구현 완료
-
-```python
-# backend/app/services/tts_service.py (실제 구현 기준)
-
-def synthesize_short_tts(
-    *,
-    text: str,
-    output_path: Path,
-    voice_key: str | None,      # "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer"
-    duration_sec: float,
-) -> TTSResult:
-    """OpenAI gpt-4o-mini-tts 호출. API 키 없거나 실패 시 FFmpeg silence 폴백."""
-    if text and settings.openai_api_key:
-        response = httpx.post(
-            "https://api.openai.com/v1/audio/speech",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json={"model": "gpt-4o-mini-tts", "voice": voice_key, "input": text, "format": "mp3"},
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        output_path.write_bytes(response.content)
-        # duration_sec 기준으로 apad/atrim 정규화 후 반환
-        ...
-    else:
-        # silence 폴백: ffmpeg -f lavfi -i anullsrc -t {duration_sec} -c:a aac
-        _ffmpeg_silence(output_path.with_suffix(".m4a"), duration_sec)
-```
-
-**비디오 템플릿 렌더러 기본 구현 (`video_template_renderer.py`):**
-
-```python
-def render_video_draft_assets(db, video_draft, *, render_config):
-    candidate = db.get(Candidate, video_draft.candidate_id)
-    script_draft = db.get(ScriptDraft, video_draft.script_draft_id)
-    out_dir = build_out_dir(candidate, video_draft.version_no)
-
-    # 1. TTS 오디오 생성
-    tts_audio_path = None
-    if video_draft.tts_voice_key and script_draft:
-        tts_audio_path = out_dir / "tts_narration.mp3"
-        generate_tts_audio(
-            script_draft.full_script_text,
-            voice_key=video_draft.tts_voice_key,
-            output_path=tts_audio_path,
-        )
-
-    # 2. clip_spans 기반 원본 클립 추출
-    clip_spans = candidate.metadata_json.get("clip_spans", [])
-    raw_clip_path = _extract_clip_spans(candidate, clip_spans, out_dir)
-
-    # 3. 세로형 변환 + 자막 + TTS 믹스
-    draft_video_path = out_dir / "draft.mp4"
-    _build_vertical_video(
-        src=raw_clip_path,
-        tts_audio=tts_audio_path,
-        output=draft_video_path,
-        width=video_draft.width,       # 1080
-        height=video_draft.height,     # 1920
-        burned_caption=video_draft.burned_caption,
-        script_draft=script_draft,
-    )
-    return {"draft_video_path": str(draft_video_path), ...}
-```
-
----
-
-### 8.4 Audio Track 운영 수준 구현 — ✅ 완료
-
-현재 오디오 시그널은 FFmpeg astats 기반 RMS 에너지만 측정한다. 실제 운영 품질을 위해서는 두 가지가 필요하다.
-
-#### 8.4-A. 성능 최적화 (단일 FFmpeg 호출) — ✅ 완료
-
-`extract_audio_energy_profile_v2()` 구현. ebur128 단일 패스. astats 폴백 포함.
-
-```python
-def extract_audio_energy_profile_v2(audio_path: Path, duration_seconds: float) -> list[dict]:
-    """단일 FFmpeg 호출로 전체 ebur128 라우드니스 프로파일 추출."""
-    proc = subprocess.run([
-        "ffmpeg", "-i", str(audio_path),
-        "-af", "ebur128=framelog=verbose",
-        "-f", "null", "-",
-    ], capture_output=True, text=True, timeout=300)
-    # 출력 파싱: "t: 5.00 M: -18.2 S: -20.1 I: -23.0"
-    return _parse_ebur128_output(proc.stderr)
-```
-
-단일 호출로 처리 시간 1/100 이하 단축 가능.
-
-#### 8.4-B. 감정·음색 기반 오디오 분석 (운영 수준) — ✅ 완료
-
-`audio_analysis_service.py`로 구현. librosa optional dependency.
-
-**목표 시그널:**
-- `audio_emotion_score`: 화남/슬픔/기쁨 등 감정 강도 (0–1)
-- `speech_energy_burst`: 목소리 에너지 급등 (현재 silence_to_spike 개선)
-- `music_presence`: BGM 존재 여부 (0–1) — 음악 있으면 감동 씬 가능성↑
-- `laughter_score`: 웃음소리 감지 (0–1) — comedy 후보 강화
-
-**구현 방향:**
-```python
-# 새 파일: backend/app/services/audio_analysis_service.py
-# librosa 또는 pyannote.audio 활용
-
-import librosa
-import numpy as np
-
-def extract_audio_features(audio_path: Path, segment_length: float = 5.0) -> list[dict]:
-    """librosa 기반 고급 오디오 특징 추출."""
-    y, sr = librosa.load(str(audio_path), sr=16000, mono=True)
-
-    segments = []
-    hop = int(segment_length * sr)
-    for i, start_sample in enumerate(range(0, len(y), hop)):
-        chunk = y[start_sample : start_sample + hop]
-        if len(chunk) < sr: continue  # 1초 미만 스킵
-
-        # 에너지 (RMS)
-        rms = float(np.sqrt(np.mean(chunk**2)))
-
-        # Spectral centroid (음색 밝기: 높으면 흥분/긴장)
-        centroid = float(np.mean(librosa.feature.spectral_centroid(y=chunk, sr=sr)))
-
-        # Zero-crossing rate (음성 vs 음악 구분)
-        zcr = float(np.mean(librosa.feature.zero_crossing_rate(chunk)))
-
-        # MFCCs (감정 분류 입력)
-        mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=13)
-        mfcc_mean = mfcc.mean(axis=1).tolist()
-
-        segments.append({
-            "start": round(i * segment_length, 3),
-            "end": round((i + 1) * segment_length, 3),
-            "rms": round(rms, 4),
-            "spectral_centroid": round(centroid, 1),
-            "zcr": round(zcr, 4),
-            "mfcc_mean": mfcc_mean,
-        })
-    return segments
-```
-
-**설정값 추가 (`core/config.py`):**
-```python
-audio_analysis_backend: str = "ffmpeg"  # "ffmpeg" | "librosa"
-audio_librosa_enabled: bool = False      # librosa 활성화 (의존성 추가 필요)
-```
-
-**의존성 추가 (`pyproject.toml`):**
-```toml
-# [project.optional-dependencies]
-audio = ["librosa>=0.10", "soundfile>=0.12"]
-```
-
----
-
-### 8.5 Entity·Coreference·Speaker Continuity 강화 — ✅ 완료
-
-**현재 한계:**
-- `dominant_entities`는 단순 토큰 빈도 기반 (고유명사 vs 일반명사 구분 없음)
-- "그", "she", "그녀" 등 대명사가 entity로 오인되거나 entity_consistency를 낮춤
-- speaker 정보(누가 말하는지)가 TranscriptSegment에 없음
-
-**목표:**
-1. **NER (Named Entity Recognition):** 인물명·장소명 고신뢰도 추출
-2. **Coreference 해소:** "그" → "이준혁" 등 지시어 해소
-3. **Speaker Diarization:** 화자 분리 → speaker_label 채우기
-
-**구현 방향:**
-
-```python
-# 새 파일: backend/app/services/entity_service.py
-
-# 방법 A: 규칙 기반 (빠름, 한국어 인물명 패턴)
-def extract_named_entities_rule_based(text: str) -> list[str]:
-    """한국어 인물명 패턴: 2–4글자 + 직함/호칭 패턴."""
-    patterns = [
-        r"[가-힣]{2,4}씨",      # "이준혁씨"
-        r"[가-힣]{2,4}(대리|과장|팀장|사장|선생|교수)",
-        r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)?",  # 영문 인물명
-    ]
-    entities = []
-    for pat in patterns:
-        entities.extend(re.findall(pat, text))
-    return list(dict.fromkeys(entities))  # 중복 제거, 순서 유지
-
-# 방법 B: 모델 기반 (정확함, 의존성 큼)
-# from transformers import pipeline
-# ner_pipeline = pipeline("ner", model="snunlp/KR-FinBert-SC")
-
-# Speaker diarization (pyannote.audio)
-# from pyannote.audio import Pipeline
-# diarization = Pipeline.from_pretrained("pyannote/speaker-diarization")
-```
-
-**단기 접근법 (의존성 최소):**
-- `dominant_entities` 추출 시 stop_words(대명사, 조사 부착 형태) 필터링 강화
-- speaker_label은 자막 파일에서 `[이름]:` 패턴이 있으면 파싱
-- coreference는 단순 window 내 마지막 언급 인물명으로 대리
-
-**`candidate_events.py` 수정 포인트:**
-```python
-# build_micro_events() 내부 entity 추출 개선
-def _extract_dominant_entities(text: str) -> list[str]:
-    tokens = tokenize(text)
-    # 현재: 모든 토큰 빈도 기반
-    # 개선: stop_words 필터 + 고유명사 패턴 우선
-    PRONOUN_STOP = {"그", "그녀", "그들", "저", "나", "너", "이", "저기",
-                    "he", "she", "they", "it", "we", "you", "i"}
-    candidates = [t for t in tokens if t not in PRONOUN_STOP and len(t) >= 2]
-    return Counter(candidates).most_common(8)
-```
-
----
-
-### 8.6 YouTube 자동 업로드 타당성 조사 — 🟢 낮음
-
-**질문:** YouTube Data API v3를 통한 자동 업로드가 실용적으로 가능한가?
-
-**현황 정리:**
-
-| 항목 | 내용 |
-|------|------|
-| API | YouTube Data API v3 (`videos.insert`) |
-| 인증 | OAuth 2.0 (채널 소유자 계정 연결 필요) |
-| 할당량 | 기본 10,000 유닛/일; `videos.insert` = 1,600 유닛/요청 → **하루 약 6개 업로드** |
-| 할당량 확장 | 심사 신청 가능하나 승인 불확실 |
-| 제약 | 계정당 연결 제한; 다중 채널 운영 시 채널별 OAuth 토큰 관리 필요 |
-
-**결론 (현 시점):**
-- 할당량 제한(6개/일)이 운영 규모에 따라 병목이 될 수 있음
-- 단일 채널 소량 업로드라면 충분
-- 다계정·자동화 대량 업로드는 API 정책 위반 위험
-- **MVP에서는 제외. 운영 규모 확인 후 3단계에서 재검토.**
-
-**향후 구현 시 필요한 것:**
-```python
-# backend/app/services/youtube_upload_service.py (향후)
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-
-def upload_to_youtube(
-    video_path: Path,
-    *,
-    title: str,
-    description: str,
-    tags: list[str],
-    credentials,  # OAuth2Credentials
-    privacy_status: str = "private",  # 초기에는 private으로 올리고 검수 후 public
-) -> str:  # → video_id
-    youtube = build("youtube", "v3", credentials=credentials)
-    body = {
-        "snippet": {"title": title, "description": description, "tags": tags},
-        "status": {"privacyStatus": privacy_status},
-    }
-    media = MediaFileUpload(str(video_path), mimetype="video/mp4", resumable=True)
-    request = youtube.videos().insert(part=",".join(body.keys()), body=body, media_body=media)
-    response = request.execute()
-    return response["id"]
-```
-
----
-
-## 9. 테스트 전략
-
-### 9.1 기존 스모크 테스트 (`backend/scripts/smoke_test.py`)
+### 8.1 기존 스모크 테스트 (`backend/scripts/smoke_test.py`)
 
 ```bash
 cd backend && make smoke
@@ -1310,7 +939,7 @@ ffmpeg -f lavfi -i "color=black:s=1920x1080:r=25" \
        -t 18 -c:v libx264 -crf 23 -c:a aac sample.mp4
 ```
 
-### 9.2 추가 필요 단위 테스트
+### 8.2 추가 필요 단위 테스트
 
 ```python
 # 언어 시그널 검증
@@ -1348,7 +977,7 @@ def test_iou_deduplication():
     assert result[0].total_score == 8.0
 ```
 
-### 9.3 통합 테스트 계획
+### 8.3 통합 테스트 계획
 
 ```python
 # tests/test_full_pipeline.py
@@ -1370,9 +999,7 @@ def test_pipeline_with_90s_video_and_srt():
             assert key in c.scores_json, f"{key} missing"
 ```
 
-### 9.4 오프라인 평가셋 및 후보 품질 평가 체계 — ✅ 완료
-
-**현재 문제:** 후보 품질을 측정하는 객관적 기준이 없음. 스코어링 가중치를 바꿔도 결과가 좋아졌는지 알 수 없음.
+### 8.4 오프라인 평가셋 및 후보 품질 평가 체계 — ✅ 완료
 
 **목표:** 오프라인 golden set을 먼저 구축하고, 그 위에서 알고리즘을 평가.
 
@@ -1393,7 +1020,7 @@ def test_pipeline_with_90s_video_and_srt():
 #### 자동 평가 지표
 
 ```python
-# 새 파일: backend/scripts/evaluate_candidates.py
+# backend/scripts/evaluate_candidates.py
 
 def evaluate_pipeline(episode_ids: list[str], golden_set: dict) -> dict:
     """파이프라인 출력을 golden set과 비교."""
@@ -1413,13 +1040,9 @@ def evaluate_pipeline(episode_ids: list[str], golden_set: dict) -> dict:
             "std": stdev(c.total_score for c in generated),
             "top3_avg": mean(c.total_score for c in generated[:3]),
         }
-        # Time coverage: 에피소드 전체 구간 중 커버된 비율
-        coverage = _timeline_coverage(generated)
-
         results[episode_id] = {
             "recall_at_k": recall_at_k,
             "score_stats": score_stats,
-            "coverage": coverage,
             "n_composite": sum(1 for c in generated if c.metadata_json.get("composite")),
         }
     return results
@@ -1434,15 +1057,7 @@ def evaluate_pipeline(episode_ids: list[str], golden_set: dict) -> dict:
   → Recall@10 < 이전 값이면 롤백
 ```
 
-**우선순위:** 실제 에피소드 1개 + 사람 레이블 3세트면 시작 가능. 초기 투자 대비 효과 높음.
-
----
-
-### 9.5 성능 계측 지표 (Observability) — ✅ 완료
-
-후보 생성 파이프라인의 탐색량·처리 시간을 계측해 병목을 파악해야 한다. 특히 긴 영화(90분+)에서 허용 가능한지 확인 필요.
-
-#### 계측 대상 지표
+### 8.5 성능 계측 지표 (Observability) — ✅ 완료
 
 | 지표 | 측정 위치 | 경고 임계값 |
 |------|-----------|-------------|
@@ -1453,87 +1068,61 @@ def evaluate_pipeline(episode_ids: list[str], golden_set: dict) -> dict:
 | `vision_rerank_ms` | `refine_candidates_with_vision()` 완료 후 | > 120,000ms (API 레이턴시 포함) |
 | `seeds_per_track` | 각 트랙 시드 생성 후 | Track A: 0이면 경고 |
 
-#### 구현 방법 (Job 메타데이터 활용)
-
-```python
-# analysis_service.py - generate_candidates_step() 수정 포인트
-import time
-
-def generate_candidates_step(db, payload):
-    episode_id = payload["episode_id"]
-    perf = {}
-
-    t0 = time.perf_counter()
-    events = build_micro_events(segments, shots)
-    perf["micro_event_count"] = len(events)
-    perf["micro_event_build_ms"] = int((time.perf_counter() - t0) * 1000)
-
-    t0 = time.perf_counter()
-    arcs = beam_search_arcs(events)
-    perf["beam_explored_states"] = _beam_state_count  # 전역 카운터
-    perf["beam_search_ms"] = int((time.perf_counter() - t0) * 1000)
-
-    t0 = time.perf_counter()
-    composites = build_composite_candidates(all_seeds, events, timeline_end)
-    perf["composite_gen_ms"] = int((time.perf_counter() - t0) * 1000)
-
-    # Job.payload_json에 성능 지표 저장
-    job.payload_json = {**job.payload_json, "perf": perf}
-
-    # 경고 로깅
-    if perf["micro_event_count"] > 500:
-        logger.warning(f"[{episode_id}] micro_event_count={perf['micro_event_count']} > 500")
-    if perf["beam_explored_states"] > 50_000:
-        logger.warning(f"[{episode_id}] beam_explored_states={perf['beam_explored_states']}")
-```
-
 ---
 
-## 10. 우선순위 로드맵
+## 9. 변경 이력 / 최근 구현 요약
 
-### 즉시 착수 — 핵심 기능 완성
+### 9.1 완료된 구현 항목 (로드맵 전 단계)
 
-| # | 작업 | 파일 | 근거 |
+| # | 항목 | 파일 | 비고 |
 |---|------|------|------|
-| 1 | ~~Whisper ASR 통합~~ | `asr_service.py` (신규), `analysis_service.py` | **완료** — faster-whisper/openai-whisper 자동 폴백 |
-| 2 | ~~TTS 기본 구현 (OpenAI TTS)~~ | `tts_service.py` | **완료** — `gpt-4o-mini-tts` 실제 구현 |
-| 3 | ~~비디오 템플릿 렌더링 기본 구현~~ | `video_template_renderer.py` | **완료** — FFmpeg ASS 기반 실제 구현 |
-| 4 | ~~Canonical Schema 고정~~ | `candidate_events.py` 등 | **완료** — entity stop_words 필터 + serialize_event 완전성 |
-| 5 | ~~오프라인 평가셋 구축~~ | `scripts/evaluate_candidates.py` (신규) | **완료** — Recall@K, 점수 분포, 타임라인 커버리지 |
+| 1 | Whisper ASR 통합 | `asr_service.py`, `analysis_service.py` | faster-whisper/openai-whisper 자동 폴백 |
+| 2 | TTS 기본 구현 | `tts_service.py` | `gpt-4o-mini-tts` + silence 폴백 |
+| 3 | 비디오 템플릿 렌더링 | `video_template_renderer.py` | FFmpeg ASS 기반 실제 구현 |
+| 4 | Canonical Schema 고정 | `candidate_events.py` 등 | entity stop_words 필터 + serialize_event |
+| 5 | 오프라인 평가셋 구축 | `scripts/evaluate_candidates.py` | Recall@K, 점수 분포, 타임라인 커버리지 |
+| 6 | LLM Arc Judge | `candidate_rerank.py` | gpt-4.1-mini, 기본 비활성 |
+| 7 | 오디오 에너지 프로파일 v2 | `candidate_audio_signals.py` | ebur128 단일 패스 |
+| 8 | 성능 계측 삽입 | `analysis_service.py`, `candidate_generation.py` | perf dict + 경고 로그 |
+| 9 | Entity·Coreference 강화 | `candidate_events.py`, `entity_service.py` | 한국어 NER + 화자 레이블 |
+| 10 | Audio librosa 고급 분석 | `audio_analysis_service.py` | spectral_centroid/ZCR/MFCC + 폴백 |
+| 11 | 복합 후보 3-스팬 확장 | `composite_candidate_generation.py` | setup-escalation-payoff 트리플 |
+| 12 | Vision 재랭크 프롬프트 v2 | `vision_candidate_refinement.py` | 한국어 v2 + 보상/패널티 기준 명시 |
+| 13 | 스코어링 가중치 A/B 프로파일 | `candidate_generation.py` | ScoringWeights (default/reaction_heavy/payoff_heavy) |
+| 14 | ML 기반 언어 시그널 (임베딩) | `candidate_language_signals.py` | OpenAI embeddings + 키워드 폴백 |
 
-### 2단계 — 품질 개선
+### 9.2 향후 검토 (규모 확인 후)
 
-| # | 작업 | 파일 | 근거 |
-|---|------|------|------|
-| 6 | ~~LLM Arc Judge 구현~~ | `candidate_rerank.py` | **완료** — gpt-4.1-mini 기반 서사 품질 필터링 |
-| 7 | ~~오디오 에너지 프로파일 v2 (단일 FFmpeg)~~ | `candidate_audio_signals.py` | **완료** — ebur128 단일 패스 |
-| 8 | ~~성능 계측 삽입~~ | `analysis_service.py`, `candidate_generation.py` | **완료** — perf dict + 경고 로그 |
-| 9 | ~~Entity·Coreference 강화~~ | `candidate_events.py`, `entity_service.py` (신규) | **완료** — 한국어 NER + 화자 레이블 |
-| 10 | ~~Audio librosa 고급 분석~~ | `audio_analysis_service.py` (신규) | **완료** — spectral_centroid/ZCR/MFCC + 폴백 |
-| 11 | ~~복합 후보 3-스팬 확장~~ | `composite_candidate_generation.py` | **완료** — setup-escalation-payoff 트리플 |
+| 항목 | 근거 |
+|------|------|
+| YouTube 자동 업로드 | 할당량(~6건/일)·채널 규모 확인 후. API 설계는 완료 상태 |
+| Speaker Diarization (pyannote.audio) | 의존성 크므로 필요성 검증 후 도입 결정 |
 
-### 3단계 — 운영 강화
+### 9.3 Live Path 연결 완료 (커밋 `43b4098`)
 
-| # | 작업 | 파일 | 근거 |
-|---|------|------|------|
-| 12 | ~~Vision 재랭크 프롬프트 개선~~ | `vision_candidate_refinement.py` | **완료** — 한국어 v2 프롬프트 + 보상/패널티 기준 명시 |
-| 13 | ~~스코어링 가중치 A/B 테스트 (평가셋 기반)~~ | `candidate_generation.py` | **완료** — ScoringWeights 프로파일 (default/reaction_heavy/payoff_heavy) |
-| 14 | ~~ML 기반 언어 시그널 (임베딩)~~ | `candidate_language_signals.py` | **완료** — OpenAI embeddings + 키워드 폴백 |
+**ML 임베딩 언어 시그널 live path 연결:**
+- `score_window()` 내 `compute_embedding_signals()` 호출
+- 조건: `EMBEDDING_SIGNALS_ENABLED=true` + `OPENAI_API_KEY` 존재
+- 결과 혼합: `max(keyword_X, emb_X * 0.8)` 방식 (comedy/emotion/tension/reaction/payoff)
+- 실패 시 keyword path 자동 폴백
+- 추가 perf 항목: `embedding_signal_windows_used`, `embedding_signal_failures`
 
-### 4단계 — 향후 검토 (규모 확인 후)
+**Track C 오디오 v2 / librosa live path 연결:**
+- `generate_audio_seeds_live()` 신규 함수가 Track C 단일 진입점
 
-| # | 작업 | 근거 |
-|---|------|------|
-| 15 | YouTube 자동 업로드 | 할당량·채널 규모 확인 후 (Section 8.6) |
-| 16 | Speaker Diarization (pyannote.audio) | 의존성 크므로 필요성 검증 후 |
+| 경로 | 조건 |
+|------|------|
+| `ebur128_v2` (기본) | 항상 시도 |
+| `astats_fallback` | ebur128 결과 없을 때 자동 폴백 |
+| `librosa` 보정 | `AUDIO_ANALYSIS_BACKEND=librosa/auto` 또는 `AUDIO_LIBROSA_ENABLED=true` 시 `tension_hint`/`speech_likelihood` 기반 소폭 보정 |
 
-### 5단계 — Live Path 연결 ✅ 완료
+- ffmpeg 없거나 audio_path=None → 빈 목록 (전체 파이프라인 영향 없음)
+- 추가 perf 항목: `audio_seed_backend`, `audio_seed_count`
 
-| # | 작업 | 파일 | 근거 |
-|---|------|------|------|
-| 17 | ~~ML 임베딩 시그널 → `score_window()` live path 연결~~ | `candidate_generation.py`, `candidate_language_signals.py`, `config.py` | **완료** — `EMBEDDING_SIGNALS_ENABLED` feature flag, 기본 비활성 |
-| 18 | ~~Track C → `generate_audio_seeds_v2()` 승격 + optional librosa 보정~~ | `candidate_generation.py`, `candidate_audio_signals.py`, `audio_analysis_service.py` | **완료** — `generate_audio_seeds_live()` wrapper, ebur128 기본·librosa optional |
-| 19 | ~~perf / smoke / evaluate에 두 항목 흔적 연결~~ | `analysis_service.py`, `smoke_test.py`, `evaluate_candidates.py` | **완료** — Tests 18-22, perf dict 항목, evaluate 집계 추가 |
+**perf / smoke / evaluate 연결:**
+- `candidate_gen_perf` dict에 임베딩·오디오 항목 추가
+- smoke_test.py Tests 18–22: 임베딩 disabled/no-key 폴백, audio_path=None 생존, 시드 메타데이터 검증
+- `evaluate_candidates.py`: `audio_track_candidate_count`, `embedding_used_candidate_count` 집계 추가
 
 ---
 
@@ -1800,49 +1389,623 @@ SCORES_KEYS = [
 
 ---
 
-## 11. Live Path 연결 구현 결과 ✅ 완료
+## 부록 D. 기술 분석 상세
 
-> 헬퍼로만 존재하던 두 기능을 실제 후보 생성 품질에 영향을 주는 live path로 승격 완료.
+### D.1 프로젝트 개요
 
-### 11.1 ML 임베딩 언어 시그널 ✅
+**Shorten**은 장편 드라마 에피소드를 분석하여 쇼츠(9:16 세로형) 후보 클립을 자동 생성하는 로컬-퍼스트 시스템입니다.
 
-**구현 파일**: `candidate_generation.py`, `candidate_language_signals.py`, `config.py`
+**핵심 목표:**
+- 에피소드 영상을 업로드하면 쇼츠 후보를 자동으로 발굴
+- 대사 구조, 시각적 임팩트, 오디오 에너지 등 다중 시그널로 후보 스코어링
+- 선택된 후보에 대해 스크립트 초안 → 비디오 초안 → 내보내기 워크플로우 지원
+- AWS 등 외부 클라우드 없이 단일 머신에서 동작
 
-`score_window()` 내에서 후보 window 당 1회 `compute_embedding_signals()` 호출.
-- 조건: `EMBEDDING_SIGNALS_ENABLED=true` + `OPENAI_API_KEY` 존재
-- 결과 혼합: `max(keyword_X, emb_X * 0.8)` 방식으로 comedy/emotion/tension/reaction/payoff 보조 합성
-- 실패·미설정 시: 기존 keyword path로 자동 폴백 (전체 파이프라인 영향 없음)
-- 추가된 metadata: `embedding_used`, `embedding_attempted`, `comedy_emb`~`payoff_emb`
-- 추가된 perf 항목: `embedding_signal_windows_used`, `embedding_signal_failures`
+**기술 스택:**
+
+| 계층 | 기술 |
+|------|------|
+| Backend | FastAPI, SQLAlchemy 2.0, Alembic, Celery 5, Redis |
+| Frontend | Next.js 16 (App Router), React 19, TanStack Query |
+| DB | PostgreSQL (프로덕션) / SQLite (로컬 개발·테스트) |
+| 미디어 처리 | FFmpeg/FFprobe CLI |
+| LLM | OpenAI SDK (mock fallback 지원) |
+| 언어 | Python 3.11+, TypeScript |
 
 ---
 
-### 11.2 Track C 오디오 v2 / librosa Live Path ✅
+### D.2 전체 아키텍처
 
-**구현 파일**: `candidate_audio_signals.py`, `candidate_generation.py`, `config.py`
+```
+[브라우저: Next.js 16]
+  ↕ REST API (http://localhost:8000/api/v1)
+[FastAPI 서버]
+  ↕ SQLAlchemy 2.0
+[PostgreSQL / SQLite]
+  ↕ Celery (Redis 브로커)
+[Celery Worker]
+  ↕ FFmpeg, OpenAI API
+[로컬 디스크 storage/]
+```
 
-`generate_audio_seeds_live()` 신규 함수가 Track C 단일 진입점.
+---
+
+### D.3 데이터베이스 스키마
+
+**파일:** `backend/app/db/models.py`
+
+#### Episode
+
+```
+id                  UUID (PK)
+show_title          str
+season_number       int? (nullable)
+episode_number      int? (nullable)
+episode_title       str? (nullable)
+original_language   str (기본 "en")
+target_channel      str (기본 "kr_us_drama")
+status              Enum: UPLOADED | PROCESSING | READY | FAILED
+source_video_path   str (원본 영상 경로)
+source_subtitle_path str? (업로드된 SRT 경로)
+proxy_video_path    str? (프록시 영상 경로, 분석 후 생성)
+audio_path          str? (분리 오디오 경로)
+duration_seconds    float? (ffprobe로 추출)
+fps                 float?
+width               int?
+height              int?
+metadata_json       JSON (분석 전 과정의 캐시·결과 저장)
+created_at, updated_at
+Relations: jobs, shots, transcript_segments, candidates (all cascade delete)
+```
+
+#### Shot
+
+```
+id              UUID (PK)
+episode_id      FK → Episode
+shot_index      int (1-based)
+start_time      float (초)
+end_time        float (초)
+thumbnail_path  str? (JPEG 썸네일 경로)
+```
+
+#### TranscriptSegment
+
+```
+id              UUID (PK)
+episode_id      FK → Episode
+segment_index   int (1-based)
+start_time      float
+end_time        float
+text            str
+speaker_label   str? (미사용; entity_service.py가 텍스트의 [화자]: 패턴 파싱)
+```
+
+#### Candidate
+
+```
+id               UUID (PK)
+episode_id       FK → Episode
+candidate_index  int (순위)
+type             str (기본 "context_commentary")
+status           Enum: GENERATED | SELECTED | REJECTED | DRAFTED
+title_hint       str (UI 표시용 제목)
+start_time       float
+end_time         float
+duration_seconds float (clip_spans 합산)
+total_score      float (0–10 정규화)
+scores_json      JSON (17개 이상 컴포넌트 점수)
+metadata_json    JSON (clip_spans, transcript_excerpt, entities, arc 정보 등)
+selected         bool
+short_clip_path  str? (렌더링된 쇼츠 경로)
+Relations: script_drafts, jobs, video_drafts
+```
+
+#### ScriptDraft
+
+```
+id                          UUID (PK)
+candidate_id                FK → Candidate
+version_no                  int
+language                    str ("ko" | "en")
+hook_text                   str
+body_text                   str
+cta_text                    str
+full_script_text            str (hook + body + cta 연결)
+estimated_duration_seconds  float (len(text) / 12)
+title_options               list[str] (제목 후보 3개 이상)
+metadata_json               JSON (provider, model, fallback_reason 등)
+is_selected                 bool
+```
+
+#### VideoDraft
+
+```
+id                UUID (PK)
+candidate_id      FK → Candidate
+script_draft_id   FK → ScriptDraft
+version_no        int
+status            Enum: CREATED | QUEUED | RUNNING | READY | FAILED | APPROVED | REJECTED
+template_type     str (기본 "context_commentary_v1")
+tts_voice_key     str?
+aspect_ratio      str (기본 "9:16")
+width, height     int (기본 1080×1920)
+draft_video_path  str?
+burned_caption    bool
+render_config_json JSON
+timeline_json     JSON
+```
+
+#### Export
+
+```
+id                    UUID (PK)
+video_draft_id        FK → VideoDraft
+status                Enum: QUEUED | RUNNING | READY | FAILED
+export_video_path     str?
+export_subtitle_path  str?
+export_script_path    str?
+export_metadata_path  str?
+export_preset         str ("shorts_default" | "review_lowres" | "archive_master")
+file_size_bytes       int?
+```
+
+#### Job
+
+```
+id               UUID (PK)
+episode_id       FK → Episode (nullable)
+candidate_id     FK → Candidate (nullable)
+type             Enum: ANALYSIS | SCRIPT_GENERATION | VIDEO_DRAFT_RENDER | EXPORT_RENDER | SHORT_CLIP_RENDER
+status           Enum: QUEUED | RUNNING | SUCCEEDED | FAILED | CANCELLED
+progress_percent int (0–100)
+current_step     str
+error_message    str?
+payload_json     JSON
+```
+
+#### 마이그레이션 이력
+
+| 버전 | 내용 |
+|------|------|
+| 0001_initial_schema | Episode, Shot, TranscriptSegment, Candidate, ScriptDraft, Job |
+| 0002_video_drafts_exports | VideoDraft, Export 모델 + 상태 Enum |
+| 0003_candidate_short_clip | Candidate에 short_clip_path 컬럼 추가 |
+| 0004_video_draft_metadata | metadata_json 컬럼 확장 (렌더 추적) |
+
+---
+
+### D.4 설정 및 환경변수
+
+**파일:** `backend/app/core/config.py`, `backend/.env.example`
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `DATABASE_URL` | `sqlite:///data/app.db` | PostgreSQL 또는 SQLite |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis URL |
+| `CELERY_TASK_ALWAYS_EAGER` | `True` | True = 동기 실행 (테스트용) |
+| `OPENAI_API_KEY` | `""` | 없으면 Mock 폴백 |
+| `OPENAI_MODEL` | `"gpt-4.1"` | 스크립트 생성 모델 |
+| `ALLOW_MOCK_LLM_FALLBACK` | `True` | OpenAI 실패 시 결정적 Mock |
+| `VISION_CANDIDATE_RERANK` | `True` | GPT-4 Vision 재랭크 활성화 |
+| `VISION_MAX_CANDIDATES_PER_EPISODE` | `8` | Vision 적용 최대 후보 수 |
+| `VISION_MAX_FRAMES_PER_CANDIDATE` | `6` | 후보당 최대 프레임 수 |
+| `VISION_MODEL` | `"gpt-4.1"` | Vision 재랭크 모델 |
+| `VISION_PROMPT_VERSION` | `"vision_candidate_rerank_v2"` | 프롬프트 버전 (한국어 v2) |
+| `FFMPEG_SCENE_THRESHOLD` | `0.32` | FFmpeg scene 감지 임계값 |
+| `ASR_ENABLED` | `False` | Whisper ASR 활성화 |
+| `WHISPER_MODEL_SIZE` | `"medium"` | Whisper 모델 크기 |
+| `WHISPER_PREFER_FASTER` | `True` | faster-whisper 우선 시도 |
+| `DEFAULT_LANGUAGE` | `"ko"` | ASR 기본 언어 |
+| `AUDIO_ANALYSIS_BACKEND` | `"ffmpeg"` | 오디오 분석 백엔드 ("ffmpeg" \| "librosa" \| "auto") |
+| `AUDIO_LIBROSA_ENABLED` | `False` | librosa 고급 분석 활성화 |
+| `EMBEDDING_SIGNALS_ENABLED` | `False` | ML 임베딩 언어 시그널 (기본 비활성, OPENAI_API_KEY 필요) |
+| `LLM_ARC_JUDGE_ENABLED` | `False` | LLM Arc Judge 활성화 (gpt-4.1-mini) |
+| `LLM_ARC_JUDGE_TOP_K` | `5` | Arc Judge 적용 최대 후보 수 |
+| `SCORING_PROFILE` | `"default"` | 스코어링 프로파일 ("default" \| "reaction_heavy" \| "payoff_heavy") |
+| `PROXY_MAX_WIDTH` | `480` | 프록시 영상 최대 너비 |
+| `PROXY_VIDEO_FPS` | `6` | 프록시 FPS |
+| `STORAGE_ROOT` | `"./storage"` | 로컬 파일 저장 루트 |
+
+---
+
+### D.5 분석 파이프라인 (Celery 태스크)
+
+**파일:** `backend/app/tasks/pipelines.py`
+
+```python
+launch_analysis_pipeline(episode_id, job_id)
+  → Celery chain:
+      ingest_episode.s()
+        → transcode_proxy.s()
+          → detect_shots.s()
+            → extract_keyframes.s()
+              → extract_or_generate_transcript.s()
+                → compute_signals.s()
+                  → generate_candidates.s()
+```
+
+**별도 태스크 체인:**
+
+| 체인 | 진입점 |
+|------|--------|
+| 스크립트 생성 | `generate_script_drafts_task` |
+| 쇼츠 클립 렌더링 | `render_short_clip_task` |
+| 비디오 초안 렌더링 | `render_video_draft_task` |
+| 내보내기 렌더링 | `render_export_task` |
+
+---
+
+### D.6 분석 서비스 상세
+
+#### Ingest Episode
+
+- `ffprobe -show_format -show_streams` 실행
+- 결과: duration, fps, width, height, has_audio 저장
+- 실패 시 기본값(duration=60, fps=25, width=1920, height=1080) 사용
+- `metadata_json["media_probe"]` = `{status, duration_seconds, fps, width, height}`
+
+#### Signal Computation (`analysis_service.py`)
+
+```python
+signals = {
+  "algorithm": "signals_v1",
+  "transcript_segment_count": len(segments),
+  "shot_count": len(shots),
+  "total_chars": sum(len(s.text) for s in segments),
+  "median_cue_duration": statistics.median([s.end - s.start for s in segments]),
+  "estimated_speech_timeline_ratio": total_speech_time / episode_duration,
+  "commentary_friendly": speech_ratio > 0.12 and seg_count >= 3
+}
+```
+
+#### Transcript Branch Logic
+
+`extract_or_generate_transcript_step()`은 세 가지 브랜치로 동작:
+
+1. **업로드된 자막 우선:** `episode.source_subtitle_path`가 있으면 SRT/WebVTT 파싱
+2. **Whisper ASR (설정 시):** `ASR_ENABLED=True`이면 `asr_service.transcribe_audio()` 호출 — faster-whisper → openai-whisper 순서로 자동 폴백
+3. **없음:** 빈 segment 목록
+
+---
+
+### D.7 후보 생성 알고리즘 상세
+
+#### D.7.1 세 가지 트랙
+
+```
+트랙 A: Dialogue-Driven — 자막 큐 → micro-event 분할 → 윈도우 열거 → 스코어링
+트랙 B: Visual-Impact — 샷 패턴 분석 → 컷 밀도 스파이크·반응샷 패턴 감지
+트랙 C: Audio-Reaction — generate_audio_seeds_live() → ebur128 기본, astats 폴백, librosa optional
+```
+
+#### D.7.2 언어 시그널 (`candidate_language_signals.py`)
+
+**키워드 기반 ToneSignals (7개):**
+```python
+class ToneSignals(TypedDict):
+    comedy_signal, emotion_signal, surprise_signal,
+    tension_signal, reaction_signal, payoff_signal, question_signal: float  # 각 0-1
+```
+
+**임베딩 기반 EmbeddingSignals — `score_window()` live path 연결 (`EMBEDDING_SIGNALS_ENABLED` feature flag):**
+```python
+class EmbeddingSignals(TypedDict):
+    comedy_emb, emotion_emb, tension_emb, reaction_emb, payoff_emb: float
+    embedding_used: bool
+
+def compute_embedding_signals(text, *, api_key=None, model="text-embedding-3-small") -> EmbeddingSignals:
+    """OpenAI Embeddings API로 레퍼런스 앵커 문장과 코사인 유사도 계산.
+    API 키 없거나 오류 시 → 키워드 기반 tone_signals로 자동 폴백.
+    EMBEDDING_SIGNALS_ENABLED=true + OPENAI_API_KEY 존재 시 score_window() 내 live path 활성.
+    """
+```
+
+**Entity 추출 강화 (`entity_service.py`):**
+```python
+def enhanced_dominant_entities(text, token_stream, *, limit=8) -> list[str]:
+    """우선순위: 화자 레이블([이름]:) > 한국어 NER 패턴 > 빈도 기반 토큰."""
+```
+
+#### D.7.3 오디오 시그널 (`candidate_audio_signals.py`, `audio_analysis_service.py`)
+
+**`generate_audio_seeds_live()` — Track C 단일 진입점 (live path 연결 완료):**
 
 | 경로 | 조건 |
 |------|------|
-| `ebur128_v2` (기본) | 항상 시도 |
+| `ebur128_v2` (기본) | 항상 시도; FFmpeg `ebur128` 단일 패스로 전체 에피소드 라우드니스 프로파일 추출 |
 | `astats_fallback` | ebur128 결과 없을 때 자동 폴백 |
 | `librosa` 보정 | `AUDIO_ANALYSIS_BACKEND=librosa/auto` 또는 `AUDIO_LIBROSA_ENABLED=true` 시 `tension_hint`/`speech_likelihood` 기반 소폭 보정 |
 
 - ffmpeg 없거나 audio_path=None → 빈 목록 (전체 파이프라인 영향 없음)
-- 추가된 seed metadata: `audio_seed_backend`, `audio_profile_segment_count`, `audio_feature_backend`
-- 추가된 perf 항목: `audio_seed_backend`, `audio_seed_count`
+- seed metadata: `audio_seed_backend`, `audio_profile_segment_count`, `audio_feature_backend`
+
+**고급 오디오 분석 (`audio_analysis_service.py`):**
+- librosa 백엔드: RMS, spectral_centroid(음색 밝기), ZCR(음성↔음악 구분), MFCC 13차원
+- `compute_audio_emotion_scores()`: `tension_hint`(긴장도), `speech_likelihood`(음성 확률)
+
+#### D.7.4 스코어링 — ScoringWeights A/B 프로파일
+
+`SCORING_PROFILE` 환경변수로 선택. `ScoringWeights.from_profile(profile)` 팩토리 메서드.
+
+| 필드 | default | reaction_heavy | payoff_heavy |
+|------|---------|----------------|--------------|
+| `speech_coverage` | 0.12 | 0.10 | 0.10 |
+| `dialogue_density` | 0.10 | 0.08 | 0.08 |
+| `qa_score` | 0.12 | 0.08 | 0.14 |
+| `reaction_score` | 0.12 | 0.20 | 0.10 |
+| `payoff_score` | 0.14 | 0.10 | 0.20 |
+| `entity_score` | 0.06 | 0.06 | 0.06 |
+| `clarity_score` | 0.10 | 0.10 | 0.10 |
+| `hook_score` | 0.10 | 0.10 | 0.10 |
+| `tone_signal` | 0.06 | 0.10 | 0.04 |
+| `cut_density` | 0.03 | 0.03 | 0.03 |
+| `visual_audio_bonus` | 0.05 | 0.05 | 0.05 |
 
 ---
 
-### 11.3 perf / smoke / evaluate 연결 ✅
+### D.8 스코어링 공식 — 실제 예시 (60초 QA 패턴 후보)
 
-**구현 파일**: `analysis_service.py`, `smoke_test.py`, `evaluate_candidates.py`
+```
+이벤트 A (0–20s): "왜 그런 거야?" (question_signal=0.7)
+이벤트 B (20–50s): "그래서 말이야... 그게 핵심이라고." (payoff=0.8, emotion=0.4)
 
-- `candidate_gen_perf` dict에 4개 항목 추가 (§11.1 perf + §11.2 perf)
-- smoke_test.py Tests 18–22: 임베딩 disabled/no-key 폴백, audio_path=None 생존, 시드 메타데이터 검증
-- `evaluate_candidates.py`: `audio_track_candidate_count`, `embedding_used_candidate_count` 집계 추가
+speech_coverage  = 0.85 * 0.12 = 0.102
+dialogue_density = 0.23 * 0.10 = 0.023
+qa_score         = 0.825 * 0.12 = 0.099
+reaction_score   = 0.75 * 0.12 = 0.090
+payoff_score     = 0.50 * 0.14 = 0.070
+entity_score     = 0.60 * 0.06 = 0.036
+clarity_score    = 0.615 * 0.10 = 0.062
+hook_score       = 0.305 * 0.10 = 0.031
+tone_signals     = 0.50 * 0.06 = 0.030
+cut_density      = 0.40 * 0.03 = 0.012
+visual_audio     = 0.50 * 0.05 = 0.025
+contiguous_bonus              = 0.040
+
+합계 = 0.620 → total_score = 6.20
+arc_quality_delta = (0.44 - 0.3) * 3.0 = +0.42
+→ 최종 = 6.62
+```
 
 ---
 
-*작성 기준: 2026-03-31 / 본문 기준 커밋 `ea32334`*
+### D.9 콘텐츠 생성 서비스
+
+#### 스크립트 생성 (`script_service.py`)
+
+**Mock 폴백 (`ALLOW_MOCK_LLM_FALLBACK=True`):**
+```python
+hook = f"이 장면이 바로 포인트입니다: {candidate.title_hint}"
+body = "겉으로는 차분한데, 사실 이 대화에는..."
+cta  = "{channel_style} 톤으로 더 보려면 팔로우!"
+```
+
+**estimated_duration 계산:**
+```python
+estimated_duration_seconds = max(15.0, len(full_script_text) / 12)
+# 12 = 한국어 기준 읽기 속도 (12글자/초)
+```
+
+#### 내보내기 프리셋
+
+| 프리셋 | 해상도 | CRF | 워터마크 |
+|--------|--------|-----|---------|
+| `shorts_default` | 1080×1920 | 23 | 없음 |
+| `review_lowres` | 720×1280 | 30 | "INTERNAL REVIEW" |
+| `archive_master` | 원본 유지 | 18 | 없음 |
+
+---
+
+### D.10 API 엔드포인트 전체
+
+**Base URL:** `http://localhost:8000/api/v1`
+
+#### Episodes
+
+| Method | Path | 설명 |
+|--------|------|------|
+| `POST` | `/episodes` | 에피소드 업로드 (multipart form) |
+| `GET` | `/episodes` | 목록 조회 |
+| `GET` | `/episodes/{id}` | 상세 조회 |
+| `DELETE` | `/episodes/{id}` | 삭제 (파일 + DB) |
+| `GET` | `/episodes/{id}/source-video` | 원본 영상 스트리밍 |
+| `POST` | `/episodes/{id}/analyze` | 분석 시작 |
+| `POST` | `/episodes/{id}/clear-analysis` | 후보·초안·내보내기 전체 삭제 |
+| `POST` | `/episodes/{id}/clear-cache` | 프록시·오디오·썸네일·Vision 캐시 삭제 |
+| `GET` | `/episodes/{id}/timeline` | shots + transcript segments 반환 |
+| `GET` | `/episodes/{id}/jobs` | 에피소드 작업 목록 |
+| `GET` | `/episodes/{id}/candidates` | 후보 목록 (status?, min_score?, type?, sort_by?) |
+
+#### Candidates & Drafts
+
+| Method | Path | 설명 |
+|--------|------|------|
+| `GET` | `/candidates/{id}` | 후보 상세 |
+| `POST` | `/candidates/{id}/script-drafts` | 스크립트 생성 트리거 |
+| `GET` | `/candidates/{id}/script-drafts` | 스크립트 목록 |
+| `PATCH` | `/script-drafts/{id}` | 스크립트 수정 |
+| `POST` | `/script-drafts/{id}/select` | 스크립트 선택 |
+| `POST` | `/candidates/{id}/video-drafts` | 비디오 초안 생성 |
+| `GET` | `/candidates/{id}/video-drafts` | 비디오 초안 목록 |
+| `GET` | `/video-drafts/{id}` | 비디오 초안 상세 |
+| `PATCH` | `/video-drafts/{id}` | 비디오 초안 수정 |
+| `POST` | `/video-drafts/{id}/rerender` | 재렌더링 트리거 |
+| `POST` | `/video-drafts/{id}/approve` | 승인 |
+| `POST` | `/video-drafts/{id}/reject` | 거절 |
+| `POST` | `/video-drafts/{id}/exports` | 내보내기 생성 |
+| `GET` | `/exports/{id}` | 내보내기 상세 |
+| `POST` | `/candidates/{id}/short-clip` | 쇼츠 클립 렌더링 트리거 |
+| `GET` | `/candidates/{id}/short-clip/video` | 쇼츠 클립 스트리밍 |
+
+#### Jobs
+
+| Method | Path | 설명 |
+|--------|------|------|
+| `GET` | `/jobs` | 작업 목록 (episode_id?, candidate_id?, type?, status?) |
+| `GET` | `/jobs/{id}` | 작업 상세 |
+
+---
+
+### D.11 프론트엔드 구조
+
+**스택:** Next.js 16 App Router + React 19 + TanStack Query v5 + TypeScript
+
+#### 페이지 구조
+
+```
+/                          → /episodes 리다이렉트
+/episodes                  → 에피소드 목록
+/episodes/new              → 업로드 폼
+/episodes/[episodeId]      → 에피소드 상세 + 타임라인 + 작업 진행 상태
+/episodes/[episodeId]/candidates → 후보 목록 + 필터
+/candidates/[candidateId]  → 후보 상세 (점수, 스팬, 트랜스크립트)
+/drafts/[draftId]          → 비디오 초안 편집기
+/exports/[exportId]        → 내보내기 다운로드
+```
+
+#### 데이터 페칭 패턴
+
+```typescript
+// Client Component (실시간 폴링 — JobsLive)
+const { data: jobs } = useQuery({
+  queryKey: ["jobs", episodeId],
+  queryFn: () => getJobs({ episode_id: episodeId }),
+  refetchInterval: 2000,  // 2초마다 폴링
+  staleTime: 0,
+});
+```
+
+---
+
+### D.12 스모크 테스트
+
+**파일:** `backend/scripts/smoke_test.py`
+
+```bash
+ffmpeg -f lavfi -i "color=black:s=1920x1080:r=25" \
+       -f lavfi -i "sine=frequency=440:sample_rate=44100" \
+       -t 18 -c:v libx264 -crf 23 -c:a aac -b:a 128k sample.mp4
+```
+
+테스트 시퀀스: 단위 테스트(tone signals, QA 패턴, IOU 중복 제거) → 통합 테스트(POST /episodes ~ GET /exports/{id}) → 임베딩 disabled/no-key 폴백 검증(Tests 18–22) → audio_path=None 생존 검증.
+
+---
+
+### D.13 스토리지 레이아웃
+
+```
+backend/storage/
+└── episodes/
+    └── {episode_id}/
+        ├── source/
+        │   ├── source.mp4
+        │   └── source.srt
+        ├── proxy/
+        │   └── analysis_proxy.mp4  (480p, 6fps)
+        ├── audio/
+        │   └── analysis_audio.m4a  (64k AAC)
+        ├── shots/
+        │   ├── 0001.jpg
+        │   └── {shot_index:04d}/
+        │       ├── frame_001.jpg
+        │       └── frame_006.jpg
+        ├── candidates/
+        │   └── {candidate_id}/
+        │       ├── video_drafts/1/draft.mp4
+        │       └── short_clip_1.mp4
+        └── cache/
+            ├── vision_rerank.json
+            └── shots_cache.json
+```
+
+---
+
+### D.14 메타데이터 JSON 구조
+
+#### Episode.metadata_json
+
+```json
+{
+  "media_probe": {"status": "ok", "duration_seconds": 2580.0, "fps": 25.0, "width": 1920, "height": 1080},
+  "proxy_transcode": {"version": "proxy_v2", "status": "completed", "mode": "analysis_proxy"},
+  "shot_detection": {"mode": "ffmpeg_scene", "status": "completed", "shot_count": 87, "cache_key": "abc123"},
+  "vision_scan": {"status": "completed", "frame_count": 522, "shots_with_keyframes": 87, "version": "vision_scan_v1"},
+  "transcript_source": "uploaded_subtitle",
+  "signals": {"algorithm": "signals_v1", "transcript_segment_count": 1240, "estimated_speech_timeline_ratio": 0.68, "commentary_friendly": true}
+}
+```
+
+#### Candidate.metadata_json (주요 필드)
+
+```json
+{
+  "generated_by": "structure_heuristic_v2",
+  "arc_form": "contiguous",
+  "candidate_track": "dialogue",
+  "window_reason": "question_answer",
+  "transcript_excerpt": "왜 그런 거야?... 그래서 말이야...",
+  "dominant_entities": ["주인공", "상대역"],
+  "clip_spans": [{"start_time": 1234.5, "end_time": 1294.5, "order": 0, "role": "main"}],
+  "vision_rerank_applied": true,
+  "vision_score_delta": 0.8,
+  "rerank_applied": true,
+  "winning_signals": ["strong_payoff", "payoff_exceeds_setup"]
+}
+```
+
+---
+
+### D.15 한계 및 구현 완료 항목
+
+#### 구현 완료 항목 (로드맵 1~3단계 + Live Path)
+
+| 기능 | 상태 | 파일 |
+|------|------|------|
+| TTS 렌더링 | **구현됨** — OpenAI `gpt-4o-mini-tts`, silence 폴백 | `tts_service.py` |
+| 비디오 편집 템플릿 | **구현됨** — FFmpeg ASS 자막 번인·텍스트 슬롯·TTS | `video_template_renderer.py` |
+| ASR (음성→텍스트) | **구현됨** — faster-whisper/openai-whisper, 자동 폴백 | `asr_service.py` |
+| LLM Arc 판정 | **구현됨** — gpt-4.1-mini, `LLM_ARC_JUDGE_ENABLED=True` 시 동작 | `candidate_rerank.py` |
+| 오디오 고급 분석 | **구현됨** — ebur128 단일 패스 + librosa optional | `candidate_audio_signals.py`, `audio_analysis_service.py` |
+| Entity·Coreference | **구현됨** — 화자 레이블 + 한국어 NER + _PRONOUN_STOP 필터 | `entity_service.py`, `candidate_language_signals.py` |
+| 후보 품질 평가 체계 | **구현됨** — Recall@K, 점수 분포, 타임라인 커버리지 | `scripts/evaluate_candidates.py` |
+| 성능 계측 | **구현됨** — perf dict in `episode.metadata_json["candidate_gen_perf"]` | `analysis_service.py` |
+| 복합 후보 3-스팬 | **구현됨** — setup-escalation-payoff 트리플, 최대 90초 | `composite_candidate_generation.py` |
+| Vision 프롬프트 v2 | **구현됨** — 한국어 v2, 보상/패널티 기준 명시 | `vision_candidate_refinement.py` |
+| 스코어링 A/B 프로파일 | **구현됨** — ScoringWeights (default/reaction_heavy/payoff_heavy) | `candidate_generation.py` |
+| ML 언어 시그널 | **구현됨** — OpenAI embeddings 코사인 유사도 + 키워드 폴백; `score_window()` live path 연결 (`EMBEDDING_SIGNALS_ENABLED` feature flag) | `candidate_language_signals.py` |
+| 오디오 Track C live path | **구현됨** — `generate_audio_seeds_live()` Track C 진입점; ebur128 기본, astats 폴백, librosa optional | `candidate_audio_signals.py` |
+
+#### 설계 제약
+
+| 제약 | 값/조건 |
+|------|--------|
+| 최대 후보 수 (에피소드당) | 14개 (MAX_CANDIDATES) |
+| Vision 적용 최대 후보 수 | 8개 (VISION_MAX_CANDIDATES_PER_EPISODE) |
+| LLM Arc Judge 적용 최대 | 5개 (LLM_ARC_JUDGE_TOP_K) |
+| 윈도우 길이 범위 | 30–180초 |
+| 최대 샷 수 | 100개 (MAX_SHOTS) |
+| 2-span 복합 최대 합산 길이 | 64초 (MAX_TOTAL_DURATION_SEC) |
+| 3-span 복합 최대 합산 길이 | 90초 (MAX_TRIPLE_DURATION_SEC) |
+| 세그먼트 간 유효 간격 | 6–420초 |
+| micro_event 수 경고 임계값 | > 500개 |
+| composite_gen_ms 경고 | > 30,000ms |
+| vision_rerank_ms 경고 | > 120,000ms |
+
+#### MVP 외 범위 (의도적 제외)
+
+- **멀티유저·권한 관리 고도화** — 단일 운영자 시스템으로 충분
+- **저작권 감지** — 내부 편집 보조 도구 범위를 벗어남
+- **실시간 협업** — 현재 운영 규모에서 불필요
+- **완전 무인 자동 배포** — 사람의 검수가 필수
+- **YouTube/SNS 자동 업로드** — 타당성 조사 후 결정 (할당량 제한: ~6건/일)
+
+#### 코드 내 주요 주석
+
+- `config.py`: `CANDIDATE_RERANK_LLM` 레거시 플래그 — `VISION_CANDIDATE_RERANK=True` 또는 이 플래그 중 하나만 켜도 Vision 재랭크 활성화 (`vision_rerank_enabled` 프로퍼티)
+- `candidate_rerank.py`: `llm_arc_judge()`는 실제 구현됨. `LLM_ARC_JUDGE_ENABLED=False`(기본값)이면 조용히 스킵
+- `asr_service.py`: `ASR_ENABLED=False`(기본값). 활성화 시 faster-whisper → openai-whisper 순 폴백
+
+---
+
+*작성 기준: 2026-03-31 / 본문 기준 커밋 `43b4098`*
