@@ -164,6 +164,7 @@ def normalize_text(value: str) -> str:
 
 
 def extract_tokens(value: str) -> list[str]:
+    """Dedupe용 unique token 목록. jaccard similarity 등에 사용."""
     text = normalize_text(value)
     if not text:
         return []
@@ -176,6 +177,14 @@ def extract_tokens(value: str) -> list[str]:
         seen.add(token)
         out.append(token)
     return out
+
+
+def extract_token_stream(value: str) -> list[str]:
+    """중복 제거하지 않은 raw token sequence. 빈도 기반 entity 계산에 사용."""
+    text = normalize_text(value)
+    if not text:
+        return []
+    return [token for token in TOKEN_RE.findall(text) if len(token) >= 2]
 
 
 def detect_language_hint(value: str) -> str:
@@ -193,6 +202,7 @@ def detect_language_hint(value: str) -> str:
 
 
 def dominant_entities(tokens: list[str], *, limit: int = 5) -> list[str]:
+    """빈도 기반 dominant entity 추출. raw token stream(중복 포함)을 입력으로 받아야 정확하다."""
     counts = Counter(token for token in tokens if len(token) >= 3)
     return [token for token, _ in counts.most_common(limit)]
 

@@ -589,6 +589,105 @@ def _test_narrative_arc_regression() -> None:
 
     print("  [OK] All 6 narrative arc regression tests passed.")
 
+    # ===== episode-boundary & entity regression tests =====
+    _test_episode_boundary_and_entity_regression()
+
+
+def _test_episode_boundary_and_entity_regression() -> None:
+    """episode boundary padding + frequency-aware entity regression checks."""
+    from app.services.candidate_spans import pad_spans_to_minimum
+    from app.services.candidate_language_signals import (
+        extract_tokens,
+        extract_token_stream,
+        dominant_entities,
+    )
+    from app.services.candidate_arc_search import ArcCandidate, arc_to_scored_window_metadata
+    from app.services.candidate_events import CandidateEvent
+    from app.services.candidate_language_signals import tone_signals
+    from app.services.candidate_rerank import rerank_scored_windows
+    from app.services.candidate_generation import ScoredWindow
+
+    # -- Test 7: support padding이 episode boundary 밖으로 안 나감 --
+    episode_end = 60.0
+    core_spans = [{"start_time": 50.0, "end_time": 58.0, "order": 0, "role": "main"}]
+    padded, added = pad_spans_to_minimum(
+        core_spans, timeline_start=0.0, timeline_end=episode_end, min_duration=30.0,
+    )
+    for span in padded:
+        assert span["end_time"] <= episode_end, \
+            f"Test 7 FAIL: span end {span['end_time']} exceeds episode end {episode_end}"
+        assert span["start_time"] >= 0.0, \
+            f"Test 7 FAIL: span start {span['start_time']} is before timeline start"
+    print("  [OK] Test 7: support padding stays within episode boundary")
+
+    # -- Test 8: contiguous 후보 padding도 실제 timeline_end 안에서만 생김 --
+    near_end_spans = [{"start_time": 55.0, "end_time": 59.0, "order": 0, "role": "main"}]
+    padded2, _ = pad_spans_to_minimum(
+        near_end_spans, timeline_start=0.0, timeline_end=episode_end, min_duration=30.0,
+    )
+    for span in padded2:
+        assert span["end_time"] <= episode_end, \
+            f"Test 8 FAIL: contiguous padding exceeds timeline_end"
+    print("  [OK] Test 8: contiguous padding respects timeline_end")
+
+    # -- Test 9: raw frequency token 기반 entity가 dedupe token보다 강한 케이스 --
+    text = "Richard Richard Richard likes investing. Investing is key for Richard."
+    dedupe_tokens = extract_tokens(text)
+    raw_stream = extract_token_stream(text)
+    entities_from_dedupe = dominant_entities(dedupe_tokens, limit=3)
+    entities_from_raw = dominant_entities(raw_stream, limit=3)
+    assert len(raw_stream) > len(dedupe_tokens), \
+        "Test 9 FAIL: raw stream should have more tokens than dedupe"
+    assert entities_from_raw[0] == "richard" if "richard" in [t.lower() for t in raw_stream] else True, \
+        "Test 9 FAIL: frequency-based entity should rank repeated tokens higher"
+    print(f"  [OK] Test 9: raw stream={len(raw_stream)} > dedupe={len(dedupe_tokens)}, top entity={entities_from_raw[0] if entities_from_raw else 'none'}")
+
+    # -- Test 10: stronger entity continuity가 있는 arc가 유리 --
+    strong_entity_window = ScoredWindow(
+        start_time=0.0, end_time=45.0, total_score=7.0,
+        scores_json={"total_score": 7.0},
+        title_hint="strong entity",
+        metadata_json={
+            "arc_form": "composite",
+            "composite": True,
+            "arc_continuity_score": 0.7,
+            "source_events": [
+                {"start_time": 0.0, "end_time": 15.0, "setup_score": 0.5, "payoff_score": 0.1,
+                 "standalone_score": 0.5, "context_dependency_score": 0.1, "event_kind": "question"},
+                {"start_time": 30.0, "end_time": 45.0, "setup_score": 0.1, "payoff_score": 0.6,
+                 "standalone_score": 0.5, "context_dependency_score": 0.1, "event_kind": "payoff"},
+            ],
+            "entity_consistency": 0.7,
+            "standalone_clarity": 0.5,
+            "window_duration_sec": 45.0,
+        },
+    )
+    weak_entity_window = ScoredWindow(
+        start_time=50.0, end_time=95.0, total_score=7.0,
+        scores_json={"total_score": 7.0},
+        title_hint="weak entity",
+        metadata_json={
+            "arc_form": "composite",
+            "composite": True,
+            "arc_continuity_score": 0.05,
+            "source_events": [
+                {"start_time": 50.0, "end_time": 65.0, "setup_score": 0.5, "payoff_score": 0.1,
+                 "standalone_score": 0.4, "context_dependency_score": 0.2, "event_kind": "question"},
+                {"start_time": 80.0, "end_time": 95.0, "setup_score": 0.1, "payoff_score": 0.6,
+                 "standalone_score": 0.4, "context_dependency_score": 0.2, "event_kind": "payoff"},
+            ],
+            "entity_consistency": 0.05,
+            "standalone_clarity": 0.4,
+            "window_duration_sec": 45.0,
+        },
+    )
+    reranked = rerank_scored_windows([weak_entity_window, strong_entity_window])
+    assert reranked[0].title_hint == "strong entity", \
+        f"Test 10 FAIL: strong entity continuity should rank higher, got {reranked[0].title_hint}"
+    print("  [OK] Test 10: stronger entity continuity composite ranks higher")
+
+    print("  [OK] All 4 episode-boundary & entity regression tests passed.")
+
 
 if __name__ == "__main__":
     run()

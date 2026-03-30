@@ -182,9 +182,9 @@ def _collect_micro_events(windows: list[ScoredWindow]) -> list[CandidateEvent]:
     return events
 
 
-def _arc_to_scored_window(arc: ArcCandidate) -> ScoredWindow:
+def _arc_to_scored_window(arc: ArcCandidate, *, timeline_end: float = 9999.0) -> ScoredWindow:
     """ArcCandidate를 ScoredWindow로 변환한다."""
-    metadata = arc_to_scored_window_metadata(arc)
+    metadata = arc_to_scored_window_metadata(arc, timeline_end=timeline_end)
     total_score = round(max(1.0, arc.total_arc_score * 10.0), 2)
     excerpt = metadata.get("transcript_excerpt", "")
 
@@ -201,7 +201,11 @@ def _arc_to_scored_window(arc: ArcCandidate) -> ScoredWindow:
     )
 
 
-def build_composite_candidates(windows: list[ScoredWindow]) -> list[ScoredWindow]:
+def build_composite_candidates(
+    windows: list[ScoredWindow],
+    *,
+    timeline_end: float = 9999.0,
+) -> list[ScoredWindow]:
     composites: list[ScoredWindow] = []
 
     # Phase 1: beam search arc 탐색
@@ -209,7 +213,7 @@ def build_composite_candidates(windows: list[ScoredWindow]) -> list[ScoredWindow
     if len(micro_events) >= 2:
         arcs = beam_search_arcs(micro_events)
         for arc in arcs:
-            sw = _arc_to_scored_window(arc)
+            sw = _arc_to_scored_window(arc, timeline_end=timeline_end)
             composites.append(sw)
             if len(composites) >= MAX_COMPOSITE_CANDIDATES:
                 return composites

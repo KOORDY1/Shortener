@@ -385,7 +385,13 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
 
     mark_analysis_running(episode, "generate_candidates")
     scored_windows = build_candidates_for_episode(db, episode_id)
-    composite_windows = build_composite_candidates(scored_windows)
+
+    shots = list(db.scalars(select(Shot).where(Shot.episode_id == episode_id)))
+    segments = list(db.scalars(select(TranscriptSegment).where(TranscriptSegment.episode_id == episode_id)))
+    from app.services.candidate_generation import _episode_timeline_end
+    timeline_end = _episode_timeline_end(episode, shots, segments)
+
+    composite_windows = build_composite_candidates(scored_windows, timeline_end=timeline_end)
 
     # contiguous 우선 원칙: contiguous complete arc가 있으면 composite에
     # composite_advantage_reason이 없는 한 감점

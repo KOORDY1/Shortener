@@ -12,6 +12,8 @@ from typing import Sequence
 
 from app.services.candidate_events import CandidateEvent, serialize_event
 
+from collections import Counter
+
 BEAM_WIDTH = 16
 MAX_ARC_DEPTH = 4
 MIN_ARC_EVENTS = 2
@@ -40,6 +42,15 @@ class ArcCandidate:
     @property
     def total_arc_score(self) -> float:
         return self.arc_scores.get("total_arc_score", 0.0)
+
+
+def _frequency_entities(events: list[CandidateEvent], *, limit: int = 8) -> list[str]:
+    """arc 전체 events에서 빈도 기반 dominant entity를 추출한다."""
+    counts: Counter[str] = Counter()
+    for e in events:
+        for ent in e.dominant_entities:
+            counts[ent] += 1
+    return [ent for ent, _ in counts.most_common(limit)]
 
 
 def _entity_overlap(a: CandidateEvent, b: CandidateEvent) -> float:
@@ -90,12 +101,13 @@ def _score_arc(events: list[CandidateEvent]) -> dict[str, float]:
 
     setup_to_payoff_delta = max(0.0, arc_payoff_strength - arc_setup_strength * 0.3)
 
+    continuity_weight = 0.15 if arc_continuity_score < 0.1 else 0.1
     total = (
         arc_setup_strength * 0.2
         + arc_escalation_strength * 0.1
-        + arc_payoff_strength * 0.3
+        + arc_payoff_strength * 0.25
         + setup_to_payoff_delta * 0.1
-        + arc_continuity_score * 0.1
+        + arc_continuity_score * continuity_weight
         + arc_standalone_score * 0.1
         + arc_visual_audio_bonus * 0.1
         - arc_context_penalty
@@ -243,18 +255,18 @@ def arc_to_scored_window_metadata(
     return {
         "generated_by": "arc_beam_search_v1",
         "composite": arc.arc_form == "composite",
+        "candidate_track": "dialogue",
         "arc_form": arc.arc_form,
         "arc_reason": arc.arc_reason,
         "arc_event_count": len(events),
+        "single_arc_complete_score": round(arc.arc_scores.get("total_arc_score", 0.0), 4),
         "clip_spans": padded_spans,
         "source_events": [serialize_event(e) for e in events],
         "transcript_excerpt": excerpt,
         "dedupe_tokens": sorted(
             set(t for e in events for t in (e.tokens or []))
         )[:16],
-        "dominant_entities": sorted(
-            set(ent for e in events for ent in e.dominant_entities)
-        )[:8],
+        "dominant_entities": _frequency_entities(events, limit=8),
         "ranking_focus": arc.arc_reason.split("(")[0] if "(" in arc.arc_reason else arc.arc_reason,
         "payoff_anchor": {
             "start_time": payoff_event.start_time,

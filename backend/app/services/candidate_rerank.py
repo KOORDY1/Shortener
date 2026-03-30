@@ -24,7 +24,11 @@ def _evaluate_arc_quality(window: ScoredWindow) -> dict[str, float]:
 
     setup_to_payoff_delta = max(0.0, payoff_strength - setup_strength * 0.5)
 
-    arc_continuity = float(meta.get("entity_consistency", scores.get("entity_consistency", 0.0)))
+    arc_continuity = float(
+        meta.get("arc_continuity_score",
+                  meta.get("entity_consistency",
+                           scores.get("entity_consistency", 0.0)))
+    )
     standalone = float(meta.get("standalone_clarity", scores.get("standalone_clarity_score", 0.0)) or 0.0)
     if standalone > 1.0:
         standalone = standalone / 10.0

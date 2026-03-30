@@ -19,6 +19,7 @@ from app.services.candidate_events import (
 from app.services.candidate_language_signals import (
     detect_language_hint,
     dominant_entities,
+    extract_token_stream,
     extract_tokens,
 )
 from app.services.candidate_structure_signals import (
@@ -322,6 +323,7 @@ def score_window(
     shots: Sequence[Shot],
     *,
     episode_avg_cut_rate: float = 0.0,
+    timeline_end: float = 0.0,
 ) -> ScoredWindow | None:
     duration = seed.end_time - seed.start_time
     if duration < MIN_WINDOW_SEC or duration > MAX_WINDOW_SEC:
@@ -333,7 +335,8 @@ def score_window(
     cuts_inside = _cuts_inside(shots, seed.start_time, seed.end_time)
     excerpt = _excerpt_from_segments(segments, seed.start_time, seed.end_time)
     tokens = extract_tokens(excerpt)
-    all_entities = dominant_entities(tokens, limit=8)
+    raw_stream = extract_token_stream(excerpt)
+    all_entities = dominant_entities(raw_stream, limit=8)
     events = seed.events
 
     candidate_track = getattr(seed, "_candidate_track", None) or "dialogue"
@@ -418,11 +421,11 @@ def score_window(
         "order": 0,
         "role": "main",
     }]
-    timeline_end_for_pad = max(seed.end_time + 30.0, seed.end_time)
+    effective_timeline_end = max(timeline_end, seed.end_time)
     padded_spans, support_added = pad_spans_to_minimum(
         core_clip_spans,
         timeline_start=0.0,
-        timeline_end=timeline_end_for_pad,
+        timeline_end=effective_timeline_end,
     )
     core_support = extract_core_support_summary(padded_spans)
 
@@ -561,7 +564,7 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
     scored = [
         window
         for seed in all_seeds
-        if (window := score_window(seed, segments, shots, episode_avg_cut_rate=episode_avg_cut_rate)) is not None
+        if (window := score_window(seed, segments, shots, episode_avg_cut_rate=episode_avg_cut_rate, timeline_end=timeline_end)) is not None
     ]
 
     if not scored and timeline_end < MIN_WINDOW_SEC:

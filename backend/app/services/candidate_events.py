@@ -7,6 +7,7 @@ from app.db.models import Shot, TranscriptSegment
 from app.services.candidate_language_signals import (
     answer_marker_score,
     dominant_entities,
+    extract_token_stream,
     extract_tokens,
     tone_signals,
 )
@@ -103,6 +104,7 @@ def _build_event(
     text = "\n".join((segment.text or "").strip() for segment in segments if (segment.text or "").strip())
     signals = tone_signals(text)
     tokens = extract_tokens(text)
+    raw_stream = extract_token_stream(text)
     return CandidateEvent(
         start_time=round(start_time, 3),
         end_time=round(end_time, 3),
@@ -112,7 +114,7 @@ def _build_event(
         event_kind=_event_kind(text, signals),
         tone_signals=signals,
         tokens=tokens,
-        dominant_entities=dominant_entities(tokens),
+        dominant_entities=dominant_entities(raw_stream),
         source_segments=[
             {
                 "id": segment.id,
