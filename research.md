@@ -73,7 +73,7 @@
 
 각 후보에 대해:
   └→ ScriptDraft 생성 (OpenAI 또는 Mock)
-       └→ VideoDraft 생성 (Template 렌더링, 현재 Mock)
+       └→ VideoDraft 생성 (FFmpeg 템플릿 렌더링, TTS 포함)
             └→ ShortClip 렌더링 (FFmpeg 9:16 실제 동작)
                  └→ Export 패키징 (MP4 + SRT + 스크립트 + 메타데이터)
 ```
@@ -184,7 +184,7 @@ Relations: candidate, video_drafts
 
 ### VideoDraft
 
-렌더링 가능한 비디오 초안. 현재 Template 렌더러는 Mock.
+렌더링 가능한 비디오 초안. `video_template_renderer.py`로 실제 FFmpeg 렌더링.
 
 ```
 id                UUID (PK)
@@ -438,7 +438,7 @@ signals = {
   └→ 샷 패턴 분석 → 컷 밀도 스파이크 · 반응샷 패턴 감지
 
 트랙 C: Audio-Reaction (오디오 에너지 기반)
-  └→ 오디오 에너지 분석 → 동적 구간 탐지 (현재 Mock)
+  └→ 오디오 에너지 분석 → FFmpeg astats RMS 기반 동적 구간 탐지 (실제 구현)
 ```
 
 ### 7.2 Micro-Event 생성
@@ -510,8 +510,9 @@ def tone_signals(text: str) -> dict:
 
 ### 7.6 오디오 시그널 (`candidate_audio_signals.py`)
 
-- 현재 구현: 오디오 에너지 분석 로직은 구조만 있고 실제 분석은 Mock
-- 향후: RMS 에너지, 무음 구간, 동적 범위를 기반으로 Audio 씨앗 생성 예정
+- **현재 구현 (실제 동작):** FFmpeg `astats` 필터로 5초 세그먼트 RMS 측정 → 무음→스파이크, 에너지 버스트, 볼륨 점프 3가지 시그널 합산 → `audio_impact_score` 계산
+- `generate_audio_seeds()`: 에피소드 프록시에서 최대 10개 오디오 씨앗 생성
+- **미구현:** 고급 spectral 분석, 화자 분리, 음악 vs. 대사 구분
 
 ### 7.7 스코어링 (`score_window`)
 
@@ -733,7 +734,7 @@ estimated_duration_seconds = max(15.0, len(full_script_text) / 12)
 
 ### 9.2 비디오 초안 서비스 (`video_draft_service.py`)
 
-현재 상태: Template 렌더러는 Mock (placeholder MP4 파일 생성). 실제 TTS·편집 통합은 미구현.
+현재 상태: `video_template_renderer.py`는 실제 FFmpeg 기반으로 구현됨. TTS는 OpenAI `gpt-4o-mini-tts` API를 실제 호출하며 API 키 없을 시 FFmpeg silence 폴백.
 
 **내보내기 프리셋:**
 
@@ -1096,9 +1097,9 @@ backend/data/
 
 | 기능 | 현재 상태 | 파일 | 구현 계획 |
 |------|-----------|------|-----------|
-| TTS 렌더링 | Placeholder MP4 생성 | `video_template_renderer.py` | plan.md §8.3 |
-| 비디오 편집 템플릿 | Mock 반환 | `video_template_renderer.py` | plan.md §8.3 |
-| 오디오 고급 분석 | FFmpeg astats RMS만 | `candidate_audio_signals.py` | plan.md §8.4-B |
+| TTS 렌더링 | **구현됨** — OpenAI `gpt-4o-mini-tts` 호출, API 키 없으면 silence 폴백 | `tts_service.py` | — |
+| 비디오 편집 템플릿 | **구현됨** — FFmpeg ASS 자막 번인·텍스트 슬롯·인트로/아웃트로 TTS 세그먼트 | `video_template_renderer.py` | — |
+| 오디오 고급 분석 | FFmpeg astats RMS 기본 구현, spectral·화자분리 미구현 | `candidate_audio_signals.py` | plan.md §8.4-B |
 | LLM Arc 판정 | `llm_arc_judge()` noop | `candidate_rerank.py` | plan.md §8.2 |
 | ASR (음성→텍스트) | 미구현, 업로드 SRT만 지원 | — | plan.md §8.1 |
 | Entity·Coreference | 단순 빈도 기반 | `candidate_events.py` | plan.md §8.5 |
@@ -1136,7 +1137,8 @@ backend/data/
 
 - **candidate_track:** `dialogue` | `visual` | `audio`
 - **arc_form:** `contiguous` | `composite`
-- **clip_span role:** `main` | `core_setup` | `core_escalation` | `core_payoff` | `support_pre` | `support_post` | `support_bridge`
+- **clip_span role (CORE_ROLES):** `core_setup` | `core_payoff` | `core_escalation` | `core_reaction` | `core_dialogue` | `core_followup` | `main` | `setup` | `payoff` | `reaction` | `followup` | `dialogue`
+- **clip_span role (SUPPORT_ROLES):** `support_pre` | `support_post` | `support_bridge`
 - **필수 metadata_json 키:** `generated_by`, `arc_form`, `candidate_track`, `clip_spans`, `transcript_excerpt`, `dominant_entities`, `dedupe_tokens`, `window_reason`, `ranking_focus`
 
 상세 정의는 plan.md 부록 C 참조.

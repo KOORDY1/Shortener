@@ -51,9 +51,9 @@
 | 구성요소 | 파일 | 현재 상태 | 우선순위 |
 |----------|------|-----------|----------|
 | **ASR (자막 자동 생성)** | 없음 | 업로드 SRT만 지원 | 🔴 높음 |
-| **TTS 렌더링** | `tts_service.py`, `video_template_renderer.py` | Mock (placeholder MP4) | 🔴 높음 |
+| **TTS 렌더링** | `tts_service.py`, `video_template_renderer.py` | **구현됨** (OpenAI TTS + silence 폴백) | — |
 | **LLM Arc Judge** | `candidate_rerank.py:llm_arc_judge()` | noop 플레이스홀더 | 🟡 중간 |
-| **비디오 템플릿 렌더러** | `video_template_renderer.py` | Mock 반환 | 🟡 중간 |
+| **비디오 템플릿 렌더러** | `video_template_renderer.py` | **구현됨** (FFmpeg ASS 자막·텍스트 슬롯·인트로아웃트로) | — |
 | **ML 언어 시그널** | `candidate_language_signals.py` | 키워드 기반만 | 🟢 낮음 |
 
 ### 1.3 MVP 외 범위 (명시적 제외)
@@ -170,7 +170,7 @@ CONTIGUOUS_GAP_SEC = 12.0
 │  Phase 5: 사용자 워크플로우         │
 │                                     │
 │  ScriptDraft 생성 (OpenAI/Mock)     │
-│  VideoDraft 렌더링 (현재 Mock)      │
+│  VideoDraft 렌더링 (FFmpeg 실제 동작)│
 │  ShortClip 렌더링 (FFmpeg 실제 동작)│
 │  Export 패키징                      │
 └─────────────────────────────────────┘
@@ -979,7 +979,7 @@ def llm_arc_judge(windows, *, top_k=5, provider="openai"):
 
 ---
 
-### 8.3 TTS 렌더링 구현 — 🔴 높은 우선순위
+### 8.3 TTS 렌더링 — ✅ 구현 완료
 
 ```python
 # backend/app/services/tts_service.py
@@ -1452,8 +1452,8 @@ def generate_candidates_step(db, payload):
 | # | 작업 | 파일 | 근거 |
 |---|------|------|------|
 | 1 | Whisper ASR 통합 | `asr_service.py` (신규), `analysis_service.py` | SRT 없는 영상 지원 |
-| 2 | TTS 기본 구현 (OpenAI TTS) | `tts_service.py` | 현재 Mock |
-| 3 | 비디오 템플릿 렌더링 기본 구현 | `video_template_renderer.py` | 현재 Mock |
+| 2 | ~~TTS 기본 구현 (OpenAI TTS)~~ | `tts_service.py` | **완료** — `gpt-4o-mini-tts` 실제 구현 |
+| 3 | ~~비디오 템플릿 렌더링 기본 구현~~ | `video_template_renderer.py` | **완료** — FFmpeg ASS 기반 실제 구현 |
 | 4 | **Canonical Schema 고정** | `candidate_events.py` 등 | 인터페이스 안정화 (부록 C) |
 | 5 | **오프라인 평가셋 구축** | `scripts/evaluate_candidates.py` (신규) | 품질 회귀 기준선 확보 |
 
@@ -1602,15 +1602,28 @@ ARC_FORM = Literal["contiguous", "composite"]
 ### Enum: clip_span role
 
 ```python
-CLIP_SPAN_ROLE = Literal[
-    "main",             # 단일 스팬 후보의 전체 구간
-    "core_setup",       # 아크의 설정부 이벤트
-    "core_escalation",  # 아크의 전개/고조 이벤트
-    "core_payoff",      # 아크의 페이오프 이벤트
-    "support_pre",      # 코어 앞에 패딩된 보조 구간
-    "support_post",     # 코어 뒤에 패딩된 보조 구간
-    "support_bridge",   # 두 코어 사이 연결 보조 구간
-]
+# candidate_spans.py 기준 실제 정의
+CORE_ROLES = frozenset({
+    # arc beam search / composite pair에서 할당
+    "core_setup",       # 아크의 설정부 이벤트 (첫 번째 이벤트)
+    "core_escalation",  # 아크의 전개/고조 이벤트 (중간 이벤트)
+    "core_payoff",      # 아크의 페이오프 이벤트 (마지막 이벤트)
+    "core_reaction",    # 반응 이벤트
+    "core_dialogue",    # 단순 대화 이벤트
+    "core_followup",    # 후속 이벤트
+    # 단일 스팬 / 레거시 호환
+    "main",             # 단일 스팬 후보의 전체 구간 (normalize_clip_spans 기본값)
+    "setup",            # 레거시 설정부
+    "payoff",           # 레거시 페이오프
+    "reaction",         # 레거시 반응
+    "followup",         # 레거시 후속
+    "dialogue",         # 레거시 대화
+})
+SUPPORT_ROLES = frozenset({
+    "support_pre",      # 코어 앞에 패딩된 보조 구간 (3–8초)
+    "support_post",     # 코어 뒤에 패딩된 보조 구간 (2–6초)
+    "support_bridge",   # 두 코어 사이 연결 보조 구간 (2–5초)
+})
 ```
 
 ### Canonical Candidate metadata_json Keys
