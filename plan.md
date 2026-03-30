@@ -1800,10 +1800,6 @@ SCORES_KEYS = [
 
 ---
 
-*작성 기준: 2026-03-31 / 본문 기준 커밋 `e42105d`*
-
----
-
 ## 11. Live Path 연결 구현 결과 ✅ 완료
 
 > 헬퍼로만 존재하던 두 기능을 실제 후보 생성 품질에 영향을 주는 live path로 승격 완료.
@@ -1846,3 +1842,7 @@ SCORES_KEYS = [
 - `candidate_gen_perf` dict에 4개 항목 추가 (§11.1 perf + §11.2 perf)
 - smoke_test.py Tests 18–22: 임베딩 disabled/no-key 폴백, audio_path=None 생존, 시드 메타데이터 검증
 - `evaluate_candidates.py`: `audio_track_candidate_count`, `embedding_used_candidate_count` 집계 추가
+
+---
+
+*작성 기준: 2026-03-31 / 본문 기준 커밋 `ea32334`*
