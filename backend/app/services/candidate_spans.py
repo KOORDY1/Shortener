@@ -68,8 +68,9 @@ def is_composite_candidate(candidate: Candidate) -> bool:
 
 
 CORE_ROLES = frozenset({
-    "core_setup", "core_payoff", "core_escalation", "core_reaction", "main",
-    "setup", "payoff", "reaction", "followup", "dialogue",
+    "core_setup", "core_payoff", "core_escalation", "core_reaction",
+    "core_dialogue", "core_followup",
+    "main", "setup", "payoff", "reaction", "followup", "dialogue",
 })
 SUPPORT_ROLES = frozenset({
     "support_pre", "support_post", "support_bridge",

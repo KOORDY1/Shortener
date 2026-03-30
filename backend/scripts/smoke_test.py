@@ -791,6 +791,43 @@ def _test_pair_fallback_regression() -> None:
 
     print("  [OK] All 4 pair fallback regression tests passed.")
 
+    _test_core_role_vocabulary()
+
+
+def _test_core_role_vocabulary() -> None:
+    """core role vocabulary가 pair fallback / beam search / summary 간 일관되는지 검증."""
+    from app.services.candidate_spans import CORE_ROLES, extract_core_support_summary
+
+    # Test 15: core_dialogue / core_followup이 CORE_ROLES에 포함
+    for role in ("core_dialogue", "core_followup", "core_setup", "core_payoff", "core_escalation", "core_reaction"):
+        assert role in CORE_ROLES, f"Test 15 FAIL: '{role}' not in CORE_ROLES"
+    print("  [OK] Test 15: all expected core roles present in CORE_ROLES")
+
+    # Test 16: core_dialogue / core_followup span이 extract_core_support_summary에서 core로 분류
+    spans = [
+        {"start_time": 0.0, "end_time": 12.0, "order": 0, "role": "core_dialogue"},
+        {"start_time": 20.0, "end_time": 35.0, "order": 1, "role": "core_followup"},
+        {"start_time": 35.0, "end_time": 40.0, "order": 2, "role": "support_post"},
+    ]
+    summary = extract_core_support_summary(spans)
+    assert len(summary["core_spans"]) == 2, \
+        f"Test 16 FAIL: expected 2 core spans, got {len(summary['core_spans'])}"
+    assert len(summary["support_spans"]) == 1, \
+        f"Test 16 FAIL: expected 1 support span, got {len(summary['support_spans'])}"
+    assert summary["core_duration_sec"] > 0, "Test 16 FAIL: core_duration_sec should be > 0"
+    print("  [OK] Test 16: core_dialogue/core_followup classified as core in summary")
+
+    # Test 17: 기존 setup/payoff 케이스가 여전히 core
+    classic = [
+        {"start_time": 0.0, "end_time": 15.0, "order": 0, "role": "core_setup"},
+        {"start_time": 30.0, "end_time": 45.0, "order": 1, "role": "core_payoff"},
+    ]
+    classic_summary = extract_core_support_summary(classic)
+    assert len(classic_summary["core_spans"]) == 2, "Test 17 FAIL: classic core_setup/core_payoff should be core"
+    print("  [OK] Test 17: classic setup/payoff roles still core")
+
+    print("  [OK] All 3 core role vocabulary tests passed.")
+
 
 if __name__ == "__main__":
     run()
