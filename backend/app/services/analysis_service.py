@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 
 from sqlalchemy import delete, func, select
@@ -32,6 +34,8 @@ from app.services.shot_detection import (
 )
 from app.services.subtitle_parse import parse_subtitle_upload_file
 from app.services.vision_candidate_refinement import refine_candidates_with_vision
+
+logger = logging.getLogger(__name__)
 
 
 def _episode_media_path(path_str: str | None) -> Path | None:
@@ -261,8 +265,30 @@ def extract_keyframes_step(db: Session, payload: dict) -> dict:
     }
 
 
+def _save_transcript_cues(
+    db: Session,
+    episode_id: str,
+    cues: list[tuple[float, float, str]],
+) -> int:
+    """(start, end, text) 튜플 목록을 TranscriptSegment로 저장하고 저장 개수를 반환한다."""
+    count = 0
+    for index, (start_time, end_time, text) in enumerate(cues, start=1):
+        db.add(
+            TranscriptSegment(
+                episode_id=episode_id,
+                segment_index=index,
+                start_time=float(start_time),
+                end_time=float(end_time),
+                text=text,
+                speaker_label=None,
+            )
+        )
+        count = index
+    return count
+
+
 def extract_or_generate_transcript_step(db: Session, payload: dict) -> dict:
-    """가짜 대본을 넣지 않습니다. 업로드 시 함께 준 SRT/WebVTT만 파싱해 저장합니다."""
+    """업로드 자막(SRT/WebVTT)을 파싱하거나, asr_enabled=True면 Whisper로 전사한다."""
     episode_id = payload["episode_id"]
     episode = db.get(Episode, episode_id)
     if episode is None:
@@ -270,29 +296,52 @@ def extract_or_generate_transcript_step(db: Session, payload: dict) -> dict:
 
     db.execute(delete(TranscriptSegment).where(TranscriptSegment.episode_id == episode_id))
 
+    settings = get_settings()
     meta = dict(episode.metadata_json or {})
     sub_path = _episode_media_path(episode.source_subtitle_path)
     count = 0
+
     if sub_path is not None and sub_path.suffix.lower() in (".srt", ".vtt"):
+        # 1순위: 업로드된 자막 파일
         try:
             cues = parse_subtitle_upload_file(sub_path)
-            for index, (start_time, end_time, text) in enumerate(cues, start=1):
-                db.add(
-                    TranscriptSegment(
-                        episode_id=episode_id,
-                        segment_index=index,
-                        start_time=float(start_time),
-                        end_time=float(end_time),
-                        text=text,
-                        speaker_label=None,
-                    )
-                )
-                count = index
+            count = _save_transcript_cues(db, episode_id, cues)
             meta["transcript_source"] = "uploaded_subtitle"
             meta.pop("transcript_error", None)
         except OSError as exc:
             meta["transcript_source"] = "parse_failed"
             meta["transcript_error"] = str(exc)[:500]
+    elif settings.asr_enabled:
+        # 2순위: Whisper ASR (asr_enabled=True 일 때만)
+        from app.services.asr_service import transcribe_audio
+
+        meta_proxy = dict(episode.metadata_json or {})
+        proxy_info = meta_proxy.get("proxy_transcode") or {}
+        audio_path_str: str | None = proxy_info.get("audio_path") or proxy_info.get("audio_output_path")
+        audio_path = _episode_media_path(audio_path_str)
+
+        if audio_path is not None and audio_path.is_file():
+            try:
+                cues = transcribe_audio(
+                    audio_path,
+                    model_size=settings.whisper_model_size,
+                    language=settings.default_language,
+                    prefer_faster_whisper=settings.whisper_prefer_faster,
+                )
+                if cues:
+                    count = _save_transcript_cues(db, episode_id, cues)
+                    meta["transcript_source"] = f"whisper_{settings.whisper_model_size}"
+                    meta["asr_language"] = settings.default_language
+                    meta.pop("transcript_error", None)
+                else:
+                    meta["transcript_source"] = "asr_empty"
+                    meta["transcript_note"] = "Whisper 전사 결과가 비어 있습니다."
+            except Exception as exc:  # noqa: BLE001
+                meta["transcript_source"] = "asr_failed"
+                meta["transcript_error"] = str(exc)[:500]
+        else:
+            meta["transcript_source"] = "asr_no_audio"
+            meta["transcript_note"] = "프록시 오디오 파일을 찾을 수 없어 ASR을 건너뜁니다."
     else:
         meta["transcript_source"] = "none"
         if episode.source_subtitle_path:
@@ -384,14 +433,37 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
     db.execute(delete(Candidate).where(Candidate.episode_id == episode_id))
 
     mark_analysis_running(episode, "generate_candidates")
+
+    perf: dict[str, object] = {}
+
+    t0 = time.perf_counter()
     scored_windows = build_candidates_for_episode(db, episode_id)
+    perf["candidate_gen_ms"] = int((time.perf_counter() - t0) * 1000)
 
     shots = list(db.scalars(select(Shot).where(Shot.episode_id == episode_id)))
     segments = list(db.scalars(select(TranscriptSegment).where(TranscriptSegment.episode_id == episode_id)))
     from app.services.candidate_generation import _episode_timeline_end
     timeline_end = _episode_timeline_end(episode, shots, segments)
 
+    # micro-event 수 계측 (scored_windows source_events 총합)
+    micro_event_count = sum(
+        len(w.metadata_json.get("source_events") or [])
+        for w in scored_windows
+        if isinstance(w.metadata_json, dict)
+    )
+    perf["micro_event_count"] = micro_event_count
+    perf["scored_window_count"] = len(scored_windows)
+
+    if micro_event_count > 500:
+        logger.warning("[%s] micro_event_count=%d > 500 (O(n²) 위험)", episode_id, micro_event_count)
+
+    t0 = time.perf_counter()
     composite_windows = build_composite_candidates(scored_windows, timeline_end=timeline_end)
+    perf["composite_gen_ms"] = int((time.perf_counter() - t0) * 1000)
+    perf["composite_count"] = len(composite_windows)
+
+    if perf["composite_gen_ms"] > 30000:
+        logger.warning("[%s] composite_gen_ms=%d > 30000ms", episode_id, perf["composite_gen_ms"])
 
     # contiguous 우선 원칙: contiguous complete arc가 있으면 composite에
     # composite_advantage_reason이 없는 한 감점
@@ -417,18 +489,28 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
             metadata_json=meta,
         ))
 
+    t0 = time.perf_counter()
     scored_windows = rerank_candidates_for_episode(
         scored_windows,
         provider="heuristic_noop",
         reason="pre_vision_candidate_rerank_hook",
     )
+    perf["rerank_ms"] = int((time.perf_counter() - t0) * 1000)
+
+    t0 = time.perf_counter()
     scored_windows, vision_summary = refine_candidates_with_vision(
         db,
         episode,
         scored_windows,
         ignore_cache=bool(payload.get("ignore_cache")),
     )
+    perf["vision_rerank_ms"] = int((time.perf_counter() - t0) * 1000)
+
+    if perf["vision_rerank_ms"] > 120000:
+        logger.warning("[%s] vision_rerank_ms=%d > 120000ms", episode_id, perf["vision_rerank_ms"])
+
     scored_windows = dedupe_scored_windows(scored_windows)
+    perf["final_candidate_count"] = len(scored_windows)
     for index, sw in enumerate(scored_windows, start=1):
         hint = sw.title_hint[:255] if len(sw.title_hint) > 255 else sw.title_hint
         clip_spans = sw.metadata_json.get("clip_spans") if isinstance(sw.metadata_json, dict) else None
@@ -453,6 +535,7 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
 
     meta = dict(episode.metadata_json or {})
     meta["vision_rerank"] = vision_summary
+    meta["candidate_gen_perf"] = perf
     episode.metadata_json = meta
     episode.status = EpisodeStatus.READY.value
     mark_analysis_completed(

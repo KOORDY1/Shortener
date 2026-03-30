@@ -139,7 +139,6 @@ def generate_visual_seeds(
     if len(shots) < 4:
         return []
 
-    all_durations = _shot_durations(shots)
     episode_avg_cut_rate = len(shots) / max(timeline_end, 1.0)
     seeds: list[dict] = []
     seen: set[tuple[int, int]] = set()

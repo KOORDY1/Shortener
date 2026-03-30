@@ -7,7 +7,6 @@ context_dependency / visual_impact / audio_impact 8개 점수(0~1)를 부여한�
 from __future__ import annotations
 
 import re
-from typing import Sequence
 
 from app.services.candidate_language_signals import normalize_text
 

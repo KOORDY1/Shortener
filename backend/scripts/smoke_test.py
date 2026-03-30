@@ -389,7 +389,6 @@ def _test_narrative_arc_regression() -> None:
     from app.services.candidate_events import CandidateEvent
     from app.services.candidate_generation import ScoredWindow
     from app.services.candidate_language_signals import extract_tokens, tone_signals
-    from app.services.candidate_role_scoring import compute_role_scores
     from app.services.candidate_arc_search import beam_search_arcs
     from app.services.candidate_spans import pad_spans_to_minimum, extract_core_support_summary
     from app.services.candidate_rerank import rerank_scored_windows
@@ -601,9 +600,6 @@ def _test_episode_boundary_and_entity_regression() -> None:
         extract_token_stream,
         dominant_entities,
     )
-    from app.services.candidate_arc_search import ArcCandidate, arc_to_scored_window_metadata
-    from app.services.candidate_events import CandidateEvent
-    from app.services.candidate_language_signals import tone_signals
     from app.services.candidate_rerank import rerank_scored_windows
     from app.services.candidate_generation import ScoredWindow
 
@@ -627,14 +623,13 @@ def _test_episode_boundary_and_entity_regression() -> None:
     )
     for span in padded2:
         assert span["end_time"] <= episode_end, \
-            f"Test 8 FAIL: contiguous padding exceeds timeline_end"
+            "Test 8 FAIL: contiguous padding exceeds timeline_end"
     print("  [OK] Test 8: contiguous padding respects timeline_end")
 
     # -- Test 9: raw frequency token 기반 entity가 dedupe token보다 강한 케이스 --
     text = "Richard Richard Richard likes investing. Investing is key for Richard."
     dedupe_tokens = extract_tokens(text)
     raw_stream = extract_token_stream(text)
-    entities_from_dedupe = dominant_entities(dedupe_tokens, limit=3)
     entities_from_raw = dominant_entities(raw_stream, limit=3)
     assert len(raw_stream) > len(dedupe_tokens), \
         "Test 9 FAIL: raw stream should have more tokens than dedupe"

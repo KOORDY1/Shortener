@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Sequence
-
 from app.services.candidate_events import CandidateEvent
 from app.services.candidate_generation import ScoredWindow
 from app.services.candidate_arc_search import (
@@ -15,6 +13,7 @@ MAX_COMPOSITE_INPUTS = 40
 MIN_GAP_SEC = 6.0
 MAX_GAP_SEC = 420.0
 MAX_TOTAL_DURATION_SEC = 64.0
+MAX_TRIPLE_DURATION_SEC = 90.0  # 3-스팬 트리플 최대 총 길이
 
 
 def _tokens(window: ScoredWindow) -> set[str]:
@@ -201,6 +200,133 @@ def _arc_to_scored_window(arc: ArcCandidate, *, timeline_end: float = 9999.0) ->
     )
 
 
+def _build_triple_composite(
+    left: ScoredWindow,
+    mid: ScoredWindow,
+    right: ScoredWindow,
+    *,
+    timeline_end: float = 9999.0,
+) -> ScoredWindow | None:
+    """setup-escalation-payoff 구조의 3-스팬 복합 후보를 생성한다."""
+    total_duration = (
+        (left.end_time - left.start_time)
+        + (mid.end_time - mid.start_time)
+        + (right.end_time - right.start_time)
+    )
+    if total_duration > MAX_TRIPLE_DURATION_SEC:
+        return None
+
+    gap_lm = mid.start_time - left.end_time
+    gap_mr = right.start_time - mid.end_time
+    if gap_lm < MIN_GAP_SEC or gap_lm > MAX_GAP_SEC:
+        return None
+    if gap_mr < MIN_GAP_SEC or gap_mr > MAX_GAP_SEC:
+        return None
+
+    left_tokens = _tokens(left)
+    mid_tokens = _tokens(mid)
+    right_tokens = _tokens(right)
+
+    lm_overlap = _jaccard(left_tokens, mid_tokens)
+    mr_overlap = _jaccard(mid_tokens, right_tokens)
+    lm_entity = _entity_overlap(left, mid)
+    mr_entity = _entity_overlap(mid, right)
+    qa_match = _question_answer_match(left, right)
+    reaction = _reaction_continuity(mid, right)
+
+    coherence = max(lm_overlap, lm_entity, mr_overlap, mr_entity, qa_match, reaction)
+    if coherence < 0.10:
+        return None
+
+    gap_penalty = min(0.45, (gap_lm + gap_mr) / 600.0)
+    duration_penalty = 0.0 if total_duration <= 60 else min(0.4, (total_duration - 60) / 40.0)
+    total_score = round(
+        min(
+            10.0,
+            (left.total_score + mid.total_score + right.total_score) / 3.0
+            + lm_entity * 0.5
+            + mr_entity * 0.5
+            + qa_match * 0.7
+            + reaction * 0.5
+            + (0.3 if coherence >= 0.3 else 0.0)
+            - gap_penalty
+            - duration_penalty,
+        ),
+        2,
+    )
+
+    from app.services.candidate_spans import (
+        MIN_CANDIDATE_DURATION_SEC,
+        extract_core_support_summary,
+        pad_spans_to_minimum,
+    )
+
+    core_spans: list[dict] = [
+        {"start_time": round(left.start_time, 3), "end_time": round(left.end_time, 3), "order": 0, "role": "core_setup"},
+        {"start_time": round(mid.start_time, 3), "end_time": round(mid.end_time, 3), "order": 1, "role": "core_escalation"},
+        {"start_time": round(right.start_time, 3), "end_time": round(right.end_time, 3), "order": 2, "role": "core_payoff"},
+    ]
+    padded_spans, support_added_sec = pad_spans_to_minimum(
+        core_spans, timeline_start=0.0, timeline_end=timeline_end,
+        min_duration=MIN_CANDIDATE_DURATION_SEC,
+    )
+    core_support = extract_core_support_summary(padded_spans)
+
+    if core_support["total_duration_sec"] < MIN_CANDIDATE_DURATION_SEC:
+        return None
+
+    merged_entities = sorted(
+        set(left.metadata_json.get("dominant_entities") or [])
+        | set(mid.metadata_json.get("dominant_entities") or [])
+        | set(right.metadata_json.get("dominant_entities") or [])
+    )[:8]
+    excerpt = " ".join(
+        part for part in [
+            str(left.metadata_json.get("transcript_excerpt") or "").strip()[:80],
+            str(mid.metadata_json.get("transcript_excerpt") or "").strip()[:80],
+            str(right.metadata_json.get("transcript_excerpt") or "").strip()[:80],
+        ]
+        if part
+    )[:280]
+
+    metadata: dict = {
+        "generated_by": "composite_triple_v1",
+        "composite": True,
+        "candidate_track": "dialogue",
+        "arc_form": "composite",
+        "arc_reason": "triple_setup_escalation_payoff",
+        "clip_spans": padded_spans,
+        **core_support,
+        "support_added_sec": support_added_sec,
+        "transcript_excerpt": excerpt,
+        "dedupe_tokens": sorted(left_tokens | mid_tokens | right_tokens)[:16],
+        "dominant_entities": merged_entities,
+        "ranking_focus": str(left.metadata_json.get("ranking_focus") or "composite"),
+        "span_count": 3,
+        "span_gap_sec_lm": round(gap_lm, 3),
+        "span_gap_sec_mr": round(gap_mr, 3),
+        "entity_overlap_lm": round(lm_entity, 3),
+        "entity_overlap_mr": round(mr_entity, 3),
+        "question_answer_match": round(qa_match, 3),
+        "reaction_shift": round(reaction, 3),
+    }
+    scores: dict = {
+        "total_score": total_score,
+        "span_count": 3,
+        "coherence": round(coherence, 3),
+        "question_answer_match": round(qa_match, 3),
+        "reaction_shift": round(reaction, 3),
+    }
+    return ScoredWindow(
+        start_time=round(left.start_time, 3),
+        end_time=round(right.end_time, 3),
+        total_score=total_score,
+        scores_json=scores,
+        title_hint=f"{left.title_hint} / {mid.title_hint} / {right.title_hint}"[:255],
+        metadata_json=metadata,
+    )
+
+
 def build_composite_candidates(
     windows: list[ScoredWindow],
     *,
@@ -381,4 +507,22 @@ def build_composite_candidates(
             )
             if len(composites) >= MAX_COMPOSITE_CANDIDATES:
                 return composites
+
+    # Phase 3: 3-스팬 triple (setup-escalation-payoff) — 슬롯이 남을 때만
+    remaining_slots = MAX_COMPOSITE_CANDIDATES - len(composites)
+    if remaining_slots > 0 and len(ordered) >= 3:
+        triple_inputs = ordered[:20]  # 상위 20개만 조합
+        for i_idx, left in enumerate(triple_inputs):
+            for j_idx, mid in enumerate(triple_inputs[i_idx + 1:], start=i_idx + 1):
+                if mid.start_time <= left.end_time:
+                    continue
+                for right in triple_inputs[j_idx + 1:]:
+                    if right.start_time <= mid.end_time:
+                        continue
+                    triple = _build_triple_composite(left, mid, right, timeline_end=timeline_end)
+                    if triple is not None:
+                        composites.append(triple)
+                        if len(composites) >= MAX_COMPOSITE_CANDIDATES:
+                            return composites
+
     return composites

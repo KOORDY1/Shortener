@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     vision_max_frames_per_candidate: int = 6
     vision_image_max_width: int = 640
     vision_model: str = "gpt-4.1"
-    vision_prompt_version: str = "vision_candidate_rerank_v1"
+    vision_prompt_version: str = "vision_candidate_rerank_v2"
     vision_scan_version: str = "vision_scan_v1"
     analysis_pipeline_version: str = "analysis_pipeline_v2"
     proxy_transcode_version: str = "proxy_v2"
@@ -46,6 +46,24 @@ class Settings(BaseSettings):
     proxy_audio_bitrate_kbps: int = 64
     # FFmpeg select(scene) 임계값 (낮을수록 컷이 많이 잡힘)
     ffmpeg_scene_threshold: float = 0.32
+    # ASR (Whisper)
+    asr_enabled: bool = False
+    whisper_model_size: str = "medium"   # tiny | base | small | medium | large
+    whisper_prefer_faster: bool = True   # faster-whisper 우선, 없으면 openai-whisper
+    default_language: str = "ko"
+
+    # 오디오 분석 백엔드
+    audio_analysis_backend: str = "ffmpeg"  # "ffmpeg" | "librosa"
+    audio_librosa_enabled: bool = False
+
+    # LLM Arc Judge
+    llm_arc_judge_enabled: bool = False
+    llm_arc_judge_top_k: int = 5
+    llm_arc_judge_model: str = "gpt-4.1-mini"
+
+    # 스코어링 프로파일 (A/B 테스트용)
+    scoring_profile: str = "default"  # "default" | "reaction_heavy" | "payoff_heavy"
+
     storage_root: str = str(DEFAULT_STORAGE_DIR)
     # 브라우저에서 Next.js(dev)가 별도 포트로 API를 호출할 때 필요. 콤마로 구분.
     cors_allowed_origins: str = (

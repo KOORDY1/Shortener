@@ -34,6 +34,7 @@ from app.services.candidate_structure_signals import (
 )
 from app.services.candidate_visual_signals import compute_visual_impact, generate_visual_seeds
 from app.services.candidate_audio_signals import generate_audio_seeds
+from app.core.config import get_settings
 
 MIN_WINDOW_SEC = 30.0
 MAX_WINDOW_SEC = 180.0
@@ -43,6 +44,37 @@ NMS_IOU_THRESHOLD = 0.52
 TEXT_DEDUPE_JACCARD_THRESHOLD = 0.82
 TEXT_DEDUPE_MAX_START_GAP_SEC = 20.0
 TEXT_DEDUPE_MIN_OVERLAP_SEC = 8.0
+
+
+@dataclass
+class ScoringWeights:
+    """스코어링 가중치 프로파일. A/B 테스트나 실험 시 교체 가능."""
+
+    speech_coverage: float = 0.12
+    dialogue_density: float = 0.10
+    qa_score: float = 0.12
+    reaction_score: float = 0.12
+    payoff_score: float = 0.14
+    entity_score: float = 0.06
+    clarity_score: float = 0.10
+    hook_score: float = 0.10
+    tone_signal: float = 0.06
+    cut_density: float = 0.03
+    visual_audio_bonus: float = 0.05
+
+    @classmethod
+    def from_profile(cls, profile: str) -> "ScoringWeights":
+        """설정된 프로파일 이름으로 가중치를 반환한다."""
+        if profile == "reaction_heavy":
+            return cls(reaction_score=0.20, payoff_score=0.16, qa_score=0.10,
+                       speech_coverage=0.10, hook_score=0.08)
+        if profile == "payoff_heavy":
+            return cls(payoff_score=0.22, qa_score=0.14, reaction_score=0.10,
+                       hook_score=0.08, speech_coverage=0.10)
+        return cls()  # default
+
+
+_DEFAULT_WEIGHTS = ScoringWeights()
 
 
 @dataclass
@@ -324,6 +356,7 @@ def score_window(
     *,
     episode_avg_cut_rate: float = 0.0,
     timeline_end: float = 0.0,
+    weights: ScoringWeights | None = None,
 ) -> ScoredWindow | None:
     duration = seed.end_time - seed.start_time
     if duration < MIN_WINDOW_SEC or duration > MAX_WINDOW_SEC:
@@ -395,19 +428,20 @@ def score_window(
     if single_arc_complete >= 0.25:
         contiguous_bonus = single_arc_complete * 0.08
 
+    w = weights or _DEFAULT_WEIGHTS
     normalized_total = min(
         1.0,
-        speech_coverage * 0.12
-        + dialogue_density * 0.10
-        + qa_score * 0.12
-        + reaction_score * 0.12
-        + payoff_score * 0.14
-        + entity_score * 0.06
-        + clarity_score * 0.10
-        + hook_score * 0.10
-        + max(comedy_signal, emotion_signal, surprise_signal, tension_signal, reaction_signal) * 0.06
-        + cut_density_score * 0.03
-        + visual_audio_bonus * 0.05
+        speech_coverage * w.speech_coverage
+        + dialogue_density * w.dialogue_density
+        + qa_score * w.qa_score
+        + reaction_score * w.reaction_score
+        + payoff_score * w.payoff_score
+        + entity_score * w.entity_score
+        + clarity_score * w.clarity_score
+        + hook_score * w.hook_score
+        + max(comedy_signal, emotion_signal, surprise_signal, tension_signal, reaction_signal) * w.tone_signal
+        + cut_density_score * w.cut_density
+        + visual_audio_bonus * w.visual_audio_bonus
         + contiguous_bonus,
     )
     total_score = round(max(1.0, normalized_total * 10.0), 2)
@@ -560,11 +594,20 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
         ws._audio_impact_score = asd.get("audio_impact_score", 0.0)  # type: ignore[attr-defined]
         dialogue_seeds.append(ws)
 
+    # 설정된 scoring_profile로 가중치 로드
+    settings = get_settings()
+    weights = ScoringWeights.from_profile(settings.scoring_profile)
+
     all_seeds = dialogue_seeds
     scored = [
         window
         for seed in all_seeds
-        if (window := score_window(seed, segments, shots, episode_avg_cut_rate=episode_avg_cut_rate, timeline_end=timeline_end)) is not None
+        if (window := score_window(
+            seed, segments, shots,
+            episode_avg_cut_rate=episode_avg_cut_rate,
+            timeline_end=timeline_end,
+            weights=weights,
+        )) is not None
     ]
 
     if not scored and timeline_end < MIN_WINDOW_SEC:

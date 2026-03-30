@@ -30,31 +30,38 @@
 | Scene 감지 (샷 경계) | `shot_detection.py` | ✅ 완성 |
 | Keyframe 추출 | `keyframe_extraction.py` | ✅ 완성 |
 | SRT/WebVTT 자막 파싱 | `subtitle_parse.py` | ✅ 완성 |
-| 언어 시그널 (키워드 기반) | `candidate_language_signals.py` | ✅ 완성 (개선 여지 있음) |
+| Whisper ASR 통합 | `asr_service.py` | ✅ 완성 (faster-whisper/openai-whisper 폴백) |
+| 언어 시그널 (키워드 + 임베딩) | `candidate_language_signals.py` | ✅ 완성 (ML 임베딩 시그널 추가) |
+| Entity 강화 (NER + 화자) | `entity_service.py` | ✅ 완성 |
 | Micro-event 생성 | `candidate_events.py` | ✅ 완성 |
 | 서사 역할 점수 | `candidate_role_scoring.py` | ✅ 완성 |
 | 구조 시그널 (QA/payoff/reaction) | `candidate_structure_signals.py` | ✅ 완성 |
 | 시각 시그널 | `candidate_visual_signals.py` | ✅ 완성 |
-| 오디오 에너지 프로파일 | `candidate_audio_signals.py` | ✅ 완성 (FFmpeg astats 기반) |
-| 윈도우 스코어링 (3-Track) | `candidate_generation.py` | ✅ 완성 |
+| 오디오 에너지 프로파일 v2 | `candidate_audio_signals.py` | ✅ 완성 (ebur128 단일 패스) |
+| 오디오 고급 분석 (librosa) | `audio_analysis_service.py` | ✅ 완성 (optional, auto 폴백) |
+| 윈도우 스코어링 (3-Track + A/B) | `candidate_generation.py` | ✅ 완성 (ScoringWeights 프로파일) |
 | 빔 서치 Arc 탐색 | `candidate_arc_search.py` | ✅ 완성 |
-| 복합 후보 생성 | `composite_candidate_generation.py` | ✅ 완성 |
-| Arc 기반 재랭크 | `candidate_rerank.py` | ✅ 완성 |
-| Vision 재랭크 (GPT-4V) | `vision_candidate_refinement.py` | ✅ 완성 (캐싱 포함) |
+| 복합 후보 생성 (2-span + 3-span) | `composite_candidate_generation.py` | ✅ 완성 |
+| Arc 기반 재랭크 + LLM Arc Judge | `candidate_rerank.py` | ✅ 완성 (gpt-4.1-mini, 기본 비활성) |
+| Vision 재랭크 v2 (GPT-4.1) | `vision_candidate_refinement.py` | ✅ 완성 (한국어 v2 프롬프트) |
 | 스크립트 생성 (OpenAI) | `script_service.py` | ✅ 완성 (Mock fallback 포함) |
 | 쇼츠 클립 FFmpeg 렌더 | `short_clip_service.py` | ✅ 완성 |
 | ASS 자막 burn-in | `subtitle_exchange.py` | ✅ 완성 |
 | Celery 파이프라인 체인 | `tasks/pipelines.py` | ✅ 완성 |
+| 성능 계측 (perf dict) | `analysis_service.py` | ✅ 완성 |
+| 오프라인 평가 스크립트 | `scripts/evaluate_candidates.py` | ✅ 완성 |
 
-### 1.2 미구현·Mock 구성요소
+### 1.2 미구현·제한적 구성요소
 
-| 구성요소 | 파일 | 현재 상태 | 우선순위 |
-|----------|------|-----------|----------|
-| **ASR (자막 자동 생성)** | 없음 | 업로드 SRT만 지원 | 🔴 높음 |
-| **TTS 렌더링** | `tts_service.py`, `video_template_renderer.py` | **구현됨** (OpenAI TTS + silence 폴백) | — |
-| **LLM Arc Judge** | `candidate_rerank.py:llm_arc_judge()` | noop 플레이스홀더 | 🟡 중간 |
-| **비디오 템플릿 렌더러** | `video_template_renderer.py` | **구현됨** (FFmpeg ASS 자막·텍스트 슬롯·인트로아웃트로) | — |
-| **ML 언어 시그널** | `candidate_language_signals.py` | 키워드 기반만 | 🟢 낮음 |
+| 구성요소 | 파일 | 현재 상태 |
+|----------|------|-----------|
+| **TTS 렌더링** | `tts_service.py`, `video_template_renderer.py` | **구현됨** (OpenAI gpt-4o-mini-tts + silence 폴백) |
+| **비디오 템플릿 렌더러** | `video_template_renderer.py` | **구현됨** (FFmpeg ASS 자막·텍스트 슬롯·TTS) |
+| **ASR (자막 자동 생성)** | `asr_service.py` | **구현됨** (기본 비활성, `ASR_ENABLED=True` 필요) |
+| **LLM Arc Judge** | `candidate_rerank.py` | **구현됨** (기본 비활성, `LLM_ARC_JUDGE_ENABLED=True` 필요) |
+| **ML 언어 시그널** | `candidate_language_signals.py` | **구현됨** (API 키 없으면 키워드 폴백) |
+| **Speaker Diarization** | 없음 | MVP 외 범위 (pyannote.audio 의존성 큼) |
+| **YouTube 자동 업로드** | 없음 | MVP 외 범위 (할당량 제한 ~6개/일) |
 
 ### 1.3 MVP 외 범위 (명시적 제외)
 
@@ -80,13 +87,14 @@ TEXT_DEDUPE_JACCARD_THRESHOLD = 0.82
 
 # composite_candidate_generation.py
 MAX_COMPOSITE_CANDIDATES = 10
-MAX_TOTAL_DURATION_SEC = 64.0
+MAX_TOTAL_DURATION_SEC = 64.0     # 2-span 복합 최대 합산
+MAX_TRIPLE_DURATION_SEC = 90.0    # 3-span 복합 최대 합산 (신규)
 MIN_GAP_SEC = 6.0
 MAX_GAP_SEC = 420.0
 
 # vision_candidate_refinement.py
-VISION_MAX_CANDIDATES = 8   # Vision 적용 최대 후보 수
-VISION_MAX_FRAMES = 6       # 후보당 최대 프레임 수
+VISION_MAX_CANDIDATES = 8   # Vision 적용 최대 후보 수 (settings)
+VISION_MAX_FRAMES = 6       # 후보당 최대 프레임 수 (settings)
 
 # candidate_arc_search.py
 BEAM_WIDTH = 16
@@ -117,7 +125,7 @@ CONTIGUOUS_GAP_SEC = 12.0
 │  extract_keyframes                  │
 │    → 샷당 6프레임 추출              │
 │  extract_transcript                 │
-│    → SRT 파싱 (or Whisper ASR 예정) │
+│    → SRT 파싱 / Whisper ASR (선택) │
 │  compute_signals                    │
 │    → speech ratio, cut density 등   │
 └─────────────────────────────────────┘
@@ -141,8 +149,9 @@ CONTIGUOUS_GAP_SEC = 12.0
 │    → ScoredWindow[] (raw scores)    │
 │                                     │
 │  build_composite_candidates()       │
-│    → beam_search_arcs()             │
-│    → pair heuristic fallback        │
+│    → beam_search_arcs() [Phase 1]  │
+│    → pair heuristic [Phase 2]      │
+│    → 3-span triple [Phase 3]       │
 │    → composite ScoredWindow[]       │
 │                                     │
 │  rerank_scored_windows()            │
@@ -161,8 +170,9 @@ CONTIGUOUS_GAP_SEC = 12.0
 │    → 상위 8개 × GPT-4V 재랭크       │
 │    → score_delta [-1.5, +1.5]       │
 │                                     │
-│  llm_arc_judge() [현재 noop]        │
-│    → 서사 판정 (향후 구현)           │
+│  llm_arc_judge() [기본 비활성]      │
+│    → gpt-4.1-mini 서사 판정        │
+│    → LLM_ARC_JUDGE_ENABLED=True 시│
 └─────────────────────────────────────┘
           │
           ▼ (Candidate DB 저장)
@@ -281,41 +291,39 @@ def parse_srt(text: str) -> list[SubtitleCue]:
 
 ---
 
-### 3.5 오디오 에너지 프로파일 (`candidate_audio_signals.py`)
+### 3.5 오디오 에너지 프로파일 (`candidate_audio_signals.py`, `audio_analysis_service.py`)
 
-Track C 씨앗 생성의 기반. FFmpeg `astats` 필터로 5초 단위 RMS 레벨 측정.
+Track C 씨앗 생성의 기반. **v2: FFmpeg `ebur128` 단일 패스** (구 astats N×호출 대비 처리 시간 1/100 이하).
 
 ```python
-def extract_audio_energy_profile(audio_path, duration_seconds):
-    t = 0.0
-    while t < duration_seconds:
-        proc = subprocess.run([
-            "ffmpeg", "-ss", str(t), "-t", "5.0",
-            "-i", str(audio_path),
-            "-af", "astats=metadata=1:reset=0",
-            "-f", "null", "-",
-        ], capture_output=True, text=True, timeout=30)
-        rms_values = _parse_rms_levels(proc.stderr)
-        rms_db = max(rms_values) if rms_values else -60.0
-        segments.append({"start": t, "end": t + 5.0, "rms_db": rms_db})
-        t += 5.0
+def extract_audio_energy_profile_v2(audio_path, duration_seconds, segment_length=5.0):
+    """단일 FFmpeg 호출로 전체 에피소드 라우드니스 프로파일 추출."""
+    proc = subprocess.run([
+        "ffmpeg", "-i", str(audio_path),
+        "-af", "ebur128=framelog=verbose",
+        "-f", "null", "-",
+    ], capture_output=True, text=True, timeout=300)
+    return _parse_ebur128_output(proc.stderr, segment_length)
+    # 폴백: ebur128 결과 없으면 astats 방식으로 전환
 
 def compute_audio_impact_scores(energy_profile):
-    mean_rms = mean([seg["rms_db"] for seg in energy_profile])
-    for i, seg in enumerate(energy_profile):
-        silence_to_spike = (
-            min(1.0, (rms - prev_rms) / 30.0)
-            if prev_rms < -40.0 and rms > -25.0 else 0.0
-        )
-        energy_burst = (
-            min(1.0, (rms - mean_rms) / 20.0)
-            if mean_rms < -10.0 and rms > mean_rms + 10.0 else 0.0
-        )
-        volume_jump = min(1.0, abs(rms - prev_rms) / 25.0)
-        impact = silence_to_spike * 0.4 + energy_burst * 0.35 + volume_jump * 0.25
+    # silence_to_spike * 0.4 + energy_burst * 0.35 + volume_jump * 0.25
+    ...
 ```
 
-오디오 임팩트 ≥ 0.2인 구간을 앵커로, pre_pad(3/6/10초) + post_pad(5/10/20초) 조합으로 WindowSeed 생성.
+오디오 임팩트 ≥ 0.2인 구간을 앵커로, pre_pad(3/6/10초) + post_pad(5/10/20초) 조합으로 WindowSeed 생성. 최대 10개 시드 (`generate_audio_seeds_v2()`).
+
+**고급 오디오 분석 (`audio_analysis_service.py`):** `AUDIO_ANALYSIS_BACKEND` 설정으로 선택.
+```python
+def extract_audio_features(audio_path, *, backend="auto") -> list[dict]:
+    # backend="librosa": RMS, spectral_centroid, ZCR, MFCC(13차원)
+    # backend="ffmpeg":  rms_db만 (ebur128 기반)
+    # backend="auto":    librosa 시도 → ImportError면 ffmpeg 폴백
+
+def compute_audio_emotion_scores(segments) -> list[dict]:
+    # tension_hint = centroid / max_centroid  (긴장도 지표)
+    # speech_likelihood = (zcr - 0.05) / 0.15  (음성 확률)
+```
 
 ---
 
@@ -531,11 +539,22 @@ arc_form = "contiguous" if all(gap(i,i+1) <= 12s) else "composite"
 
 ### 4.5 복합 후보 생성 (`composite_candidate_generation.py`)
 
-비연속 세그먼트를 묶는 복합 후보.
+비연속 세그먼트를 묶는 복합 후보. 3단계 생성.
 - **Phase 1:** `beam_search_arcs()` 결과 → `ArcCandidate` → `ScoredWindow`
 - **Phase 2:** 최고 40개 윈도우의 쌍(pair) 휴리스틱 폴백
+- **Phase 3:** 상위 20개 윈도우의 3-스팬 트리플 (setup-escalation-payoff, MAX_TRIPLE_DURATION_SEC=90.0)
 
-**쌍 스코어 공식:**
+**Phase 3 — 3-스팬 트리플 조건:**
+```python
+# _build_triple_composite(left, mid, right, *, timeline_end)
+# - gap1 = mid.start - left.end: 6s ≤ gap ≤ 420s
+# - gap2 = right.start - mid.end: 6s ≤ gap ≤ 420s
+# - total_duration ≤ 90.0s AND ≥ 30.0s
+# - coherence(entity Jaccard) ≥ 0.10
+# - 역할: left→core_setup, mid→core_escalation, right→core_payoff
+```
+
+**Phase 2 — 쌍 스코어 공식:**
 ```python
 total_score = (
     (left.total_score + right.total_score) / 2.0
@@ -676,9 +695,9 @@ def _evaluate_arc_quality(window) -> dict:
     # final_score = clamp(old_score + delta, 1.0, 10.0)
 ```
 
-### 5.4 언어 시그널 키워드 (`candidate_language_signals.py`)
+### 5.4 언어 시그널 (`candidate_language_signals.py`)
 
-7개 시그널 × (한국어 + 영어) 키워드 기반 감지:
+#### 키워드 기반 ToneSignals (7개)
 
 ```python
 def _keyword_signal_score(text, keywords) -> float:
@@ -693,14 +712,33 @@ def _keyword_signal_score(text, keywords) -> float:
 
 def tone_signals(text) -> ToneSignals:
     # question_signal: "?" 존재(+0.4) + QUESTION_MARKERS 포함(+0.35)
-    # 나머지 6개: _keyword_signal_score 결과
-    return {
-        "question_signal": ...,
-        "comedy_signal":   max(ko_score, en_score),
-        "emotion_signal":  max(ko_score, en_score),
-        "surprise_signal": ..., "tension_signal": ...,
-        "reaction_signal": ..., "payoff_signal":  ...,
-    }
+    # comedy/emotion: max(한국어, 영어) 점수
+    return ToneSignals(question_signal=..., comedy_signal=..., ...)
+```
+
+#### Entity 추출 강화
+
+```python
+_PRONOUN_STOP: frozenset[str]  # 한국어/영어 대명사 + 동사 파편 (약 30개)
+
+def dominant_entities(tokens: list[str], *, limit: int = 5) -> list[str]:
+    """_PRONOUN_STOP 필터 + len >= 2 조건. raw token stream 입력 필요."""
+```
+
+#### ML 기반 임베딩 시그널 (신규)
+
+```python
+class EmbeddingSignals(TypedDict):
+    comedy_emb, emotion_emb, tension_emb, reaction_emb, payoff_emb: float
+    embedding_used: bool
+
+_EMBEDDING_ANCHORS: dict[str, list[str]]  # 카테고리별 한국어 앵커 문장 3개
+
+def compute_embedding_signals(text, *, api_key=None, model="text-embedding-3-small") -> EmbeddingSignals:
+    """
+    - API 키 있으면: 앵커 + 쿼리를 배치 요청 → 코사인 유사도 계산 → [0,1] 정규화
+    - API 키 없거나 오류: tone_signals() 결과로 폴백 (embedding_used=False)
+    """
 ```
 
 ---
@@ -722,24 +760,27 @@ cache_key = stable_hash({
     "frames": [file_signature(p) for p in frame_paths],
 })
 
-# Vision API 호출
+# Vision API 호출 (vision_candidate_rerank_v2 — 한국어 시스템 프롬프트)
 response = client.chat.completions.create(
     model="gpt-4.1",
     response_format={"type": "json_object"},
     messages=[
         {"role": "system", "content": """
-            Return strict JSON:
-            score_delta (-1.5..1.5),
-            visual_hook_score (0..10),
-            self_contained_score (0..10),
-            emotion_shift_score (0..10),
-            thumbnail_strength_score (0..10),
-            vision_reason (한국어, max 140자),
-            title_hint (max 90자 or null)
+            당신은 한국 드라마 쇼츠 채널의 편집 전문가입니다.
+            반환 JSON 필드:
+            score_delta (-1.5..1.5), visual_hook_score (0..10),
+            self_contained_score (0..10), emotion_shift_score (0..10),
+            thumbnail_strength_score (0..10), vision_reason (한국어 max 140자),
+            title_hint (max 90자 or null), note (max 220자 or null)
 
-            우선순위: 웃긴/역설적/감동적/공감 클립
-            보상: 독립 이해 가능 + 시각적 훅
-            패널티: 약한 프레임 + 빈 자막
+            ## 강하게 보상 (+score_delta)
+            - 웃긴/역설/황당한 상황 (코미디·반전)
+            - 감동적·공감 장면 (울컥, 화해, 고백)
+            - 강한 감정 폭발, 30~75초 기승전결 완결
+
+            ## 패널티 (-score_delta)
+            - 앞 장면 없이 이해 불가, 감정 결말 없이 끊김
+            - 어두운 화면, 빈 자막
         """},
         {"role": "user", "content": [
             {"type": "text", "text": json.dumps(candidate_context)},
@@ -754,28 +795,34 @@ delta = clamp(payload["score_delta"], -1.5, 1.5)
 new_score = clamp(old_score + delta, 1.0, 10.0)
 ```
 
-### 6.2 LLM Arc Judge 플레이스홀더 (`candidate_rerank.py`)
+### 6.2 LLM Arc Judge (`candidate_rerank.py`) — ✅ 구현 완료
+
+`LLM_ARC_JUDGE_ENABLED=True`일 때 상위 `LLM_ARC_JUDGE_TOP_K`개(기본 5) 후보에 적용.
 
 ```python
-def llm_arc_judge(windows, *, top_k=5, provider="noop") -> list[ScoredWindow]:
+def llm_arc_judge(windows, *, top_k=5, provider="openai") -> list[ScoredWindow]:
+    """gpt-4.1-mini 기반 서사 품질 판정.
+    API 키 없거나 provider="noop"이면 조용히 스킵 (기존 점수 유지).
     """
-    현재: noop (metadata에 플래그만 추가)
-    향후 구현 목표:
-    - setup → payoff로 실제 닫히는가?
-    - standalone 이해 가능성이 충분한가?
-    - 30~75초 쇼츠로 먹히는가?
-    - 대사 없어도 화면/오디오 임팩트만으로 강한가?
-    """
-    for i, window in enumerate(windows):
-        metadata = dict(window.metadata_json or {})
-        if i < top_k:
-            metadata["llm_arc_judge_applied"] = (provider != "noop")
-            metadata["llm_arc_judge_provider"] = provider
-        result.append(replace(window, metadata_json=metadata))
-    return result
+    for i, window in enumerate(windows[:top_k]):
+        context = {
+            "title_hint": window.title_hint,
+            "duration_sec": window.end_time - window.start_time,
+            "transcript_excerpt": ...,
+        }
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            response_format={"type": "json_object"},
+            messages=[system: _ARC_JUDGE_SYSTEM_PROMPT, user: json.dumps(context)],
+            temperature=0.1, max_tokens=300,
+        )
+        # 응답: arc_closed(bool), standalone(0-10), shorts_fit(0-10),
+        #       adjustment([-1.0, 1.0]), reason(str)
+        delta = clamp(payload["adjustment"], -1.0, 1.0)
+        windows[i] = _apply_llm_adjustment(windows[i], delta, payload)
 ```
 
-구체적 구현 계획은 Section 8.2 참조.
+metadata에 `llm_arc_judge_applied`, `llm_arc_judge_model`, `llm_arc_judge_reason` 기록.
 
 ---
 
@@ -860,7 +907,7 @@ EXPORT_PRESETS = {
 
 ## 8. 미구현 항목 구체적 구현 계획
 
-### 8.1 ASR 통합 (Whisper) — 🔴 최우선
+### 8.1 ASR 통합 (Whisper) — ✅ 완료
 
 **목적:** SRT 파일 없이도 분석 파이프라인 실행 가능.
 
@@ -931,7 +978,7 @@ default_language: str = "ko"
 
 ---
 
-### 8.2 LLM Arc Judge 구현 — 🟡 중간
+### 8.2 LLM Arc Judge 구현 — ✅ 완료
 
 ```python
 # candidate_rerank.py - llm_arc_judge() 실제 구현
@@ -1046,13 +1093,13 @@ def render_video_draft_assets(db, video_draft, *, render_config):
 
 ---
 
-### 8.4 Audio Track 운영 수준 구현 — 🟡 중간
+### 8.4 Audio Track 운영 수준 구현 — ✅ 완료
 
 현재 오디오 시그널은 FFmpeg astats 기반 RMS 에너지만 측정한다. 실제 운영 품질을 위해서는 두 가지가 필요하다.
 
-#### 8.4-A. 성능 최적화 (단일 FFmpeg 호출)
+#### 8.4-A. 성능 최적화 (단일 FFmpeg 호출) — ✅ 완료
 
-**문제:** 현재 `extract_audio_energy_profile()`이 5초 단위 × N번 FFmpeg 호출. 90분 영화에서 1080번 반복.
+`extract_audio_energy_profile_v2()` 구현. ebur128 단일 패스. astats 폴백 포함.
 
 ```python
 def extract_audio_energy_profile_v2(audio_path: Path, duration_seconds: float) -> list[dict]:
@@ -1068,9 +1115,9 @@ def extract_audio_energy_profile_v2(audio_path: Path, duration_seconds: float) -
 
 단일 호출로 처리 시간 1/100 이하 단축 가능.
 
-#### 8.4-B. 감정·음색 기반 오디오 분석 (운영 수준)
+#### 8.4-B. 감정·음색 기반 오디오 분석 (운영 수준) — ✅ 완료
 
-현재 RMS 기반 에너지만으로는 대사 감정("울먹이는 목소리", "격앙된 톤")을 감지하지 못한다.
+`audio_analysis_service.py`로 구현. librosa optional dependency.
 
 **목표 시그널:**
 - `audio_emotion_score`: 화남/슬픔/기쁨 등 감정 강도 (0–1)
@@ -1134,7 +1181,7 @@ audio = ["librosa>=0.10", "soundfile>=0.12"]
 
 ---
 
-### 8.5 Entity·Coreference·Speaker Continuity 강화 — 🟡 중간
+### 8.5 Entity·Coreference·Speaker Continuity 강화 — ✅ 완료
 
 **현재 한계:**
 - `dominant_entities`는 단순 토큰 빈도 기반 (고유명사 vs 일반명사 구분 없음)
@@ -1325,7 +1372,7 @@ def test_pipeline_with_90s_video_and_srt():
             assert key in c.scores_json, f"{key} missing"
 ```
 
-### 9.4 오프라인 평가셋 및 후보 품질 평가 체계 — 🔴 중요
+### 9.4 오프라인 평가셋 및 후보 품질 평가 체계 — ✅ 완료
 
 **현재 문제:** 후보 품질을 측정하는 객관적 기준이 없음. 스코어링 가중치를 바꿔도 결과가 좋아졌는지 알 수 없음.
 
@@ -1393,7 +1440,7 @@ def evaluate_pipeline(episode_ids: list[str], golden_set: dict) -> dict:
 
 ---
 
-### 9.5 성능 계측 지표 (Observability)
+### 9.5 성능 계측 지표 (Observability) — ✅ 완료
 
 후보 생성 파이프라인의 탐색량·처리 시간을 계측해 병목을 파악해야 한다. 특히 긴 영화(90분+)에서 허용 가능한지 확인 필요.
 
@@ -1450,30 +1497,30 @@ def generate_candidates_step(db, payload):
 
 | # | 작업 | 파일 | 근거 |
 |---|------|------|------|
-| 1 | Whisper ASR 통합 | `asr_service.py` (신규), `analysis_service.py` | SRT 없는 영상 지원 |
+| 1 | ~~Whisper ASR 통합~~ | `asr_service.py` (신규), `analysis_service.py` | **완료** — faster-whisper/openai-whisper 자동 폴백 |
 | 2 | ~~TTS 기본 구현 (OpenAI TTS)~~ | `tts_service.py` | **완료** — `gpt-4o-mini-tts` 실제 구현 |
 | 3 | ~~비디오 템플릿 렌더링 기본 구현~~ | `video_template_renderer.py` | **완료** — FFmpeg ASS 기반 실제 구현 |
-| 4 | **Canonical Schema 고정** | `candidate_events.py` 등 | 인터페이스 안정화 (부록 C) |
-| 5 | **오프라인 평가셋 구축** | `scripts/evaluate_candidates.py` (신규) | 품질 회귀 기준선 확보 |
+| 4 | ~~Canonical Schema 고정~~ | `candidate_events.py` 등 | **완료** — entity stop_words 필터 + serialize_event 완전성 |
+| 5 | ~~오프라인 평가셋 구축~~ | `scripts/evaluate_candidates.py` (신규) | **완료** — Recall@K, 점수 분포, 타임라인 커버리지 |
 
 ### 2단계 — 품질 개선
 
 | # | 작업 | 파일 | 근거 |
 |---|------|------|------|
-| 6 | LLM Arc Judge 구현 | `candidate_rerank.py` | 서사 품질 필터링 |
-| 7 | 오디오 에너지 프로파일 v2 (단일 FFmpeg) | `candidate_audio_signals.py` | 성능 1/100 |
-| 8 | **성능 계측 삽입** | `analysis_service.py`, `candidate_generation.py` | Observability (Section 9.5) |
-| 9 | **Entity·Coreference 강화** | `candidate_events.py`, `entity_service.py` (신규) | entity_score 신뢰도 향상 |
-| 10 | Audio librosa 고급 분석 | `audio_analysis_service.py` (신규) | Track C 실질적 활용 |
-| 11 | 복합 후보 3-스팬 확장 | `composite_candidate_generation.py` | 더 다양한 패턴 |
+| 6 | ~~LLM Arc Judge 구현~~ | `candidate_rerank.py` | **완료** — gpt-4.1-mini 기반 서사 품질 필터링 |
+| 7 | ~~오디오 에너지 프로파일 v2 (단일 FFmpeg)~~ | `candidate_audio_signals.py` | **완료** — ebur128 단일 패스 |
+| 8 | ~~성능 계측 삽입~~ | `analysis_service.py`, `candidate_generation.py` | **완료** — perf dict + 경고 로그 |
+| 9 | ~~Entity·Coreference 강화~~ | `candidate_events.py`, `entity_service.py` (신규) | **완료** — 한국어 NER + 화자 레이블 |
+| 10 | ~~Audio librosa 고급 분석~~ | `audio_analysis_service.py` (신규) | **완료** — spectral_centroid/ZCR/MFCC + 폴백 |
+| 11 | ~~복합 후보 3-스팬 확장~~ | `composite_candidate_generation.py` | **완료** — setup-escalation-payoff 트리플 |
 
 ### 3단계 — 운영 강화
 
 | # | 작업 | 파일 | 근거 |
 |---|------|------|------|
-| 12 | Vision 재랭크 프롬프트 개선 | `vision_candidate_refinement.py` | 정확도 향상 |
-| 13 | 스코어링 가중치 A/B 테스트 (평가셋 기반) | `candidate_generation.py` | 데이터 기반 튜닝 |
-| 14 | ML 기반 언어 시그널 (임베딩) | `candidate_language_signals.py` | 키워드 한계 극복 |
+| 12 | ~~Vision 재랭크 프롬프트 개선~~ | `vision_candidate_refinement.py` | **완료** — 한국어 v2 프롬프트 + 보상/패널티 기준 명시 |
+| 13 | ~~스코어링 가중치 A/B 테스트 (평가셋 기반)~~ | `candidate_generation.py` | **완료** — ScoringWeights 프로파일 (default/reaction_heavy/payoff_heavy) |
+| 14 | ~~ML 기반 언어 시그널 (임베딩)~~ | `candidate_language_signals.py` | **완료** — OpenAI embeddings + 키워드 폴백 |
 
 ### 4단계 — 향후 검토 (규모 확인 후)
 
@@ -1499,7 +1546,7 @@ class CandidateEvent:
     event_kind: str        # "question"|"reaction"|"payoff"|"tension"|"emotion"|"funny_dialogue"|"dialogue"
     tone_signals: dict     # 7개 시그널 (각 0.0–1.0)
     tokens: list[str]      # 중복 제거 토큰 (Jaccard 용)
-    dominant_entities: list[str]  # 빈도 기반 핵심 엔티티 (상위 5개)
+    dominant_entities: list[str]  # enhanced_dominant_entities(): 화자레이블>NER>빈도 (상위 8개)
     source_segments: list[dict]
 
     # 역할 점수 (candidate_role_scoring.py, 각 0.0–1.0)
@@ -1543,7 +1590,8 @@ class ScoredWindow:
 ]
 ```
 
-역할: `main` | `core_setup` | `core_payoff` | `core_escalation` | `support_pre` | `support_post` | `support_bridge`
+- **CORE_ROLES:** `core_setup` | `core_escalation` | `core_payoff` | `core_reaction` | `core_dialogue` | `core_followup` | `main` | `setup` | `payoff` | `reaction` | `followup` | `dialogue`
+- **SUPPORT_ROLES:** `support_pre` | `support_post` | `support_bridge`
 
 ---
 
@@ -1556,7 +1604,15 @@ CELERY_TASK_ALWAYS_EAGER=true
 OPENAI_API_KEY=                   # 비워두면 Mock 사용
 ALLOW_MOCK_LLM_FALLBACK=true
 VISION_CANDIDATE_RERANK=false
-ASR_ENABLED=false                 # 향후 추가
+ASR_ENABLED=false                 # Whisper ASR (기본 비활성)
+WHISPER_MODEL_SIZE=medium
+WHISPER_PREFER_FASTER=true
+DEFAULT_LANGUAGE=ko
+AUDIO_ANALYSIS_BACKEND=ffmpeg     # "ffmpeg" | "librosa" | "auto"
+AUDIO_LIBROSA_ENABLED=false
+LLM_ARC_JUDGE_ENABLED=false       # gpt-4.1-mini Arc Judge (기본 비활성)
+LLM_ARC_JUDGE_TOP_K=5
+SCORING_PROFILE=default           # "default" | "reaction_heavy" | "payoff_heavy"
 
 # Docker 프로덕션 (PostgreSQL + Redis + 실제 LLM)
 DATABASE_URL=postgresql+psycopg://user:pass@postgres:5432/shorten
@@ -1566,8 +1622,11 @@ OPENAI_API_KEY=sk-...
 VISION_CANDIDATE_RERANK=true
 VISION_MAX_CANDIDATES_PER_EPISODE=8
 VISION_MAX_FRAMES_PER_CANDIDATE=6
-ASR_ENABLED=true                  # 향후 추가
-WHISPER_MODEL_SIZE=medium         # 향후 추가
+VISION_PROMPT_VERSION=vision_candidate_rerank_v2
+ASR_ENABLED=true
+WHISPER_MODEL_SIZE=medium
+LLM_ARC_JUDGE_ENABLED=true
+SCORING_PROFILE=default
 FFMPEG_SCENE_THRESHOLD=0.32
 PROXY_MAX_WIDTH=480
 PROXY_VIDEO_FPS=6
@@ -1713,4 +1772,4 @@ SCORES_KEYS = [
 
 ---
 
-*작성 기준: 2026-03-30 / 본문 기준 커밋 `b1b1926`*
+*작성 기준: 2026-03-31 / 본문 기준 커밋 `223a810`*
