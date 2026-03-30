@@ -440,6 +440,31 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
     scored_windows = build_candidates_for_episode(db, episode_id)
     perf["candidate_gen_ms"] = int((time.perf_counter() - t0) * 1000)
 
+    # 임베딩 시그널 사용 현황 집계
+    emb_attempted = sum(
+        1 for w in scored_windows
+        if isinstance(w.metadata_json, dict) and w.metadata_json.get("embedding_attempted")
+    )
+    emb_used = sum(
+        1 for w in scored_windows
+        if isinstance(w.metadata_json, dict) and w.metadata_json.get("embedding_used")
+    )
+    perf["embedding_signal_windows_used"] = emb_used
+    perf["embedding_signal_failures"] = max(0, emb_attempted - emb_used)
+
+    # 오디오 시드 현황 집계
+    audio_seeds = [
+        w for w in scored_windows
+        if isinstance(w.metadata_json, dict) and w.metadata_json.get("candidate_track") == "audio"
+    ]
+    audio_backends = {
+        w.metadata_json.get("audio_seed_backend", "unknown")
+        for w in audio_seeds
+        if isinstance(w.metadata_json, dict)
+    }
+    perf["audio_seed_backend"] = ",".join(sorted(audio_backends)) if audio_backends else "none"
+    perf["audio_seed_count"] = len(audio_seeds)
+
     shots = list(db.scalars(select(Shot).where(Shot.episode_id == episode_id)))
     segments = list(db.scalars(select(TranscriptSegment).where(TranscriptSegment.episode_id == episode_id)))
     from app.services.candidate_generation import _episode_timeline_end

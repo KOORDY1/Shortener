@@ -17,6 +17,7 @@
 8. [미구현 항목 구체적 구현 계획](#8-미구현-항목-구체적-구현-계획)
 9. [테스트 전략](#9-테스트-전략)
 10. [우선순위 로드맵](#10-우선순위-로드맵)
+11. [Live Path 연결 구현 결과](#11-live-path-연결-구현-결과)
 
 ---
 
@@ -31,19 +32,22 @@
 | Keyframe 추출 | `keyframe_extraction.py` | ✅ 완성 |
 | SRT/WebVTT 자막 파싱 | `subtitle_parse.py` | ✅ 완성 |
 | Whisper ASR 통합 | `asr_service.py` | ✅ 완성 (faster-whisper/openai-whisper 폴백) |
-| 언어 시그널 (키워드 + 임베딩) | `candidate_language_signals.py` | ✅ 완성 (ML 임베딩 시그널 추가) |
+| 언어 시그널 (키워드 + 임베딩) | `candidate_language_signals.py` | ✅ 완성 (ML 임베딩 `score_window()` live path 연결; `EMBEDDING_SIGNALS_ENABLED=true` + API 키 시 활성, 기본 비활성) |
 | Entity 강화 (NER + 화자) | `entity_service.py` | ✅ 완성 |
 | Micro-event 생성 | `candidate_events.py` | ✅ 완성 |
 | 서사 역할 점수 | `candidate_role_scoring.py` | ✅ 완성 |
 | 구조 시그널 (QA/payoff/reaction) | `candidate_structure_signals.py` | ✅ 완성 |
 | 시각 시그널 | `candidate_visual_signals.py` | ✅ 완성 |
-| 오디오 에너지 프로파일 v2 | `candidate_audio_signals.py` | ✅ 완성 (ebur128 단일 패스) |
-| 오디오 고급 분석 (librosa) | `audio_analysis_service.py` | ✅ 완성 (optional, auto 폴백) |
+| 오디오 에너지 프로파일 v2 | `candidate_audio_signals.py` | ✅ 완성 (Track C `generate_audio_seeds_live()` ebur128 기본 경로) |
+| 오디오 고급 분석 (librosa) | `audio_analysis_service.py` | ✅ 완성 (Track C optional 보정 연결; `AUDIO_ANALYSIS_BACKEND=librosa/auto` 시 활성, 기본 비활성) |
 | 윈도우 스코어링 (3-Track + A/B) | `candidate_generation.py` | ✅ 완성 (ScoringWeights 프로파일) |
 | 빔 서치 Arc 탐색 | `candidate_arc_search.py` | ✅ 완성 |
 | 복합 후보 생성 (2-span + 3-span) | `composite_candidate_generation.py` | ✅ 완성 |
 | Arc 기반 재랭크 + LLM Arc Judge | `candidate_rerank.py` | ✅ 완성 (gpt-4.1-mini, 기본 비활성) |
 | Vision 재랭크 v2 (GPT-4.1) | `vision_candidate_refinement.py` | ✅ 완성 (한국어 v2 프롬프트) |
+| TTS 렌더링 | `tts_service.py` | ✅ 완성 (OpenAI gpt-4o-mini-tts + silence 폴백) |
+| 비디오 템플릿 렌더러 | `video_template_renderer.py` | ✅ 완성 (FFmpeg ASS 자막·텍스트 슬롯·TTS) |
+| ASR (Whisper) | `asr_service.py` | ✅ 완성 (기본 비활성, `ASR_ENABLED=True` 필요) |
 | 스크립트 생성 (OpenAI) | `script_service.py` | ✅ 완성 (Mock fallback 포함) |
 | 쇼츠 클립 FFmpeg 렌더 | `short_clip_service.py` | ✅ 완성 |
 | ASS 자막 burn-in | `subtitle_exchange.py` | ✅ 완성 |
@@ -51,21 +55,14 @@
 | 성능 계측 (perf dict) | `analysis_service.py` | ✅ 완성 |
 | 오프라인 평가 스크립트 | `scripts/evaluate_candidates.py` | ✅ 완성 |
 
-### 1.2 미구현·제한적 구성요소
+### 1.2 MVP 외 범위 (선택적 미구현)
 
 | 구성요소 | 파일 | 현재 상태 |
 |----------|------|-----------|
-| **TTS 렌더링** | `tts_service.py`, `video_template_renderer.py` | **구현됨** (OpenAI gpt-4o-mini-tts + silence 폴백) |
-| **비디오 템플릿 렌더러** | `video_template_renderer.py` | **구현됨** (FFmpeg ASS 자막·텍스트 슬롯·TTS) |
-| **ASR (자막 자동 생성)** | `asr_service.py` | **구현됨** (기본 비활성, `ASR_ENABLED=True` 필요) |
-| **LLM Arc Judge** | `candidate_rerank.py` | **구현됨** (기본 비활성, `LLM_ARC_JUDGE_ENABLED=True` 필요) |
-| **ML 언어 시그널** | `candidate_language_signals.py` | **구현됨** (API 키 없으면 키워드 폴백) |
 | **Speaker Diarization** | 없음 | MVP 외 범위 (pyannote.audio 의존성 큼) |
 | **YouTube 자동 업로드** | 없음 | MVP 외 범위 (할당량 제한 ~6개/일) |
 
 ### 1.3 MVP 외 범위 (명시적 제외)
-
-다음 항목들은 현재 MVP에서 의도적으로 제외한다. 필요성이 확인되면 추후 검토.
 
 | 항목 | 이유 |
 |------|------|
@@ -74,6 +71,7 @@
 | 실시간 협업 | 현재 운영 규모에서 불필요 |
 | 완전 무인 자동 배포 | 사람의 검수가 필수 |
 | YouTube/SNS 자동 업로드 | 타당성 조사 후 결정 (Section 8.7 참조) |
+| Speaker Diarization | pyannote.audio 의존성 크므로 필요성 검증 후 |
 
 ### 1.4 핵심 제약값
 
@@ -1529,6 +1527,14 @@ def generate_candidates_step(db, payload):
 | 15 | YouTube 자동 업로드 | 할당량·채널 규모 확인 후 (Section 8.6) |
 | 16 | Speaker Diarization (pyannote.audio) | 의존성 크므로 필요성 검증 후 |
 
+### 5단계 — Live Path 연결 ✅ 완료
+
+| # | 작업 | 파일 | 근거 |
+|---|------|------|------|
+| 17 | ~~ML 임베딩 시그널 → `score_window()` live path 연결~~ | `candidate_generation.py`, `candidate_language_signals.py`, `config.py` | **완료** — `EMBEDDING_SIGNALS_ENABLED` feature flag, 기본 비활성 |
+| 18 | ~~Track C → `generate_audio_seeds_v2()` 승격 + optional librosa 보정~~ | `candidate_generation.py`, `candidate_audio_signals.py`, `audio_analysis_service.py` | **완료** — `generate_audio_seeds_live()` wrapper, ebur128 기본·librosa optional |
+| 19 | ~~perf / smoke / evaluate에 두 항목 흔적 연결~~ | `analysis_service.py`, `smoke_test.py`, `evaluate_candidates.py` | **완료** — Tests 18-22, perf dict 항목, evaluate 집계 추가 |
+
 ---
 
 ## 부록 A. 핵심 데이터 구조
@@ -1610,6 +1616,9 @@ WHISPER_PREFER_FASTER=true
 DEFAULT_LANGUAGE=ko
 AUDIO_ANALYSIS_BACKEND=ffmpeg     # "ffmpeg" | "librosa" | "auto"
 AUDIO_LIBROSA_ENABLED=false
+EMBEDDING_SIGNALS_ENABLED=false   # ML 임베딩 언어 시그널 (기본 비활성, OPENAI_API_KEY 필요)
+EMBEDDING_SIGNALS_MODEL=text-embedding-3-small
+EMBEDDING_SIGNALS_MAX_CHARS=1000  # 임베딩 입력 최대 문자 수
 LLM_ARC_JUDGE_ENABLED=false       # gpt-4.1-mini Arc Judge (기본 비활성)
 LLM_ARC_JUDGE_TOP_K=5
 SCORING_PROFILE=default           # "default" | "reaction_heavy" | "payoff_heavy"
@@ -1626,6 +1635,7 @@ VISION_PROMPT_VERSION=vision_candidate_rerank_v2
 ASR_ENABLED=true
 WHISPER_MODEL_SIZE=medium
 LLM_ARC_JUDGE_ENABLED=true
+EMBEDDING_SIGNALS_ENABLED=true    # ML 임베딩 시그널 활성 (OPENAI_API_KEY 필수)
 SCORING_PROFILE=default
 FFMPEG_SCENE_THRESHOLD=0.32
 PROXY_MAX_WIDTH=480
@@ -1715,6 +1725,17 @@ OPTIONAL_METADATA_KEYS = [
     "winning_signals",       # list[str]
     "llm_arc_judge_applied", # bool
     "perf",                  # dict (성능 계측값)
+    # ML 임베딩 시그널 (EMBEDDING_SIGNALS_ENABLED=true 시 채워짐)
+    "embedding_used",        # bool — API 호출 성공 여부
+    "embedding_attempted",   # bool — API 호출 시도 여부 (키 존재 + 플래그 활성)
+    "comedy_emb",            # float (0~1)
+    "emotion_emb",           # float (0~1)
+    "tension_emb",           # float (0~1)
+    "reaction_emb",          # float (0~1)
+    "payoff_emb",            # float (0~1)
+    # Track C 오디오 시드 메타데이터
+    "audio_seed_backend",    # str: "ebur128_v2" | "astats_fallback" | "librosa"
+    "audio_feature_backend", # str: "ffmpeg" | "librosa" | "auto"
 ]
 ```
 
@@ -1732,12 +1753,13 @@ class ClipSpan(TypedDict):
 
 ```python
 SCORES_KEYS = [
-    # 기본 측정값
+    # 기본 측정값 (score_window())
+    "total_score",
     "speech_coverage",
-    "dialogue_density",
-    "char_count",
-    "cut_count",
-    "dialogue_turn_density",
+    "dialogue_turn_density",   # 대화 밀도 (chars/sec 기반)
+    "chars_per_sec",           # 초당 문자 수
+    "cuts_inside",             # 구간 내 컷 수
+    "single_arc_complete_score",  # contiguous arc 완결도 (0~1)
     # 구조 시그널
     "question_answer_score",
     "reaction_shift_score",
@@ -1745,24 +1767,30 @@ SCORES_KEYS = [
     "entity_consistency",
     "standalone_clarity_score",
     "hookability_score",
-    # 언어 시그널
+    # 키워드 기반 언어 시그널
     "comedy_signal",
     "emotion_signal",
     "surprise_signal",
     "tension_signal",
     "reaction_signal",
     "payoff_signal",
+    # ML 임베딩 언어 시그널 (EMBEDDING_SIGNALS_ENABLED=true 시 실값, 아니면 0.0)
+    "comedy_emb",
+    "emotion_emb",
+    "tension_emb",
+    "reaction_emb",
+    "payoff_emb",
     # 시각/오디오
     "visual_impact",
     "audio_impact",
-    "cut_density_score",
-    "visual_audio_bonus",
-    # Arc 재랭크
+    "cut_density_score",       # 재랭크 단계에서 추가
+    "visual_audio_bonus",      # 재랭크 단계에서 추가
+    # Arc 재랭크 (candidate_rerank.py)
     "arc_quality_delta",
     "arc_setup_strength",
     "arc_payoff_strength",
     "arc_continuity",
-    # Vision 재랭크 (옵션)
+    # Vision 재랭크 (옵션, vision_candidate_refinement.py)
     "visual_hook_score",
     "self_contained_score",
     "emotion_shift_score",
@@ -1772,4 +1800,49 @@ SCORES_KEYS = [
 
 ---
 
-*작성 기준: 2026-03-31 / 본문 기준 커밋 `c7a655f`*
+*작성 기준: 2026-03-31 / 본문 기준 커밋 `e42105d`*
+
+---
+
+## 11. Live Path 연결 구현 결과 ✅ 완료
+
+> 헬퍼로만 존재하던 두 기능을 실제 후보 생성 품질에 영향을 주는 live path로 승격 완료.
+
+### 11.1 ML 임베딩 언어 시그널 ✅
+
+**구현 파일**: `candidate_generation.py`, `candidate_language_signals.py`, `config.py`
+
+`score_window()` 내에서 후보 window 당 1회 `compute_embedding_signals()` 호출.
+- 조건: `EMBEDDING_SIGNALS_ENABLED=true` + `OPENAI_API_KEY` 존재
+- 결과 혼합: `max(keyword_X, emb_X * 0.8)` 방식으로 comedy/emotion/tension/reaction/payoff 보조 합성
+- 실패·미설정 시: 기존 keyword path로 자동 폴백 (전체 파이프라인 영향 없음)
+- 추가된 metadata: `embedding_used`, `embedding_attempted`, `comedy_emb`~`payoff_emb`
+- 추가된 perf 항목: `embedding_signal_windows_used`, `embedding_signal_failures`
+
+---
+
+### 11.2 Track C 오디오 v2 / librosa Live Path ✅
+
+**구현 파일**: `candidate_audio_signals.py`, `candidate_generation.py`, `config.py`
+
+`generate_audio_seeds_live()` 신규 함수가 Track C 단일 진입점.
+
+| 경로 | 조건 |
+|------|------|
+| `ebur128_v2` (기본) | 항상 시도 |
+| `astats_fallback` | ebur128 결과 없을 때 자동 폴백 |
+| `librosa` 보정 | `AUDIO_ANALYSIS_BACKEND=librosa/auto` 또는 `AUDIO_LIBROSA_ENABLED=true` 시 `tension_hint`/`speech_likelihood` 기반 소폭 보정 |
+
+- ffmpeg 없거나 audio_path=None → 빈 목록 (전체 파이프라인 영향 없음)
+- 추가된 seed metadata: `audio_seed_backend`, `audio_profile_segment_count`, `audio_feature_backend`
+- 추가된 perf 항목: `audio_seed_backend`, `audio_seed_count`
+
+---
+
+### 11.3 perf / smoke / evaluate 연결 ✅
+
+**구현 파일**: `analysis_service.py`, `smoke_test.py`, `evaluate_candidates.py`
+
+- `candidate_gen_perf` dict에 4개 항목 추가 (§11.1 perf + §11.2 perf)
+- smoke_test.py Tests 18–22: 임베딩 disabled/no-key 폴백, audio_path=None 생존, 시드 메타데이터 검증
+- `evaluate_candidates.py`: `audio_track_candidate_count`, `embedding_used_candidate_count` 집계 추가

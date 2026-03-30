@@ -262,6 +262,101 @@ def generate_audio_seeds_v2(
     return seeds[:MAX_AUDIO_SEEDS]
 
 
+def _apply_advanced_feature_corrections(
+    seeds: list[dict],
+    features: list[dict],
+) -> list[dict]:
+    """librosa 특징으로 seed audio_impact_score를 소폭 보정한다.
+
+    - tension_hint > 0.5: 소폭 보너스 (+tension * 0.1)
+    - speech_likelihood < 0.2 (BGM/음악 지배): 과도한 보너스 억제 (×0.85)
+    spectral_centroid 필드가 없으면 (ffmpeg 결과) 원본 반환.
+    """
+    if not features or "tension_hint" not in features[0]:
+        return seeds
+
+    corrected: list[dict] = []
+    for seed in seeds:
+        start = float(seed["start_time"])
+        end = float(seed["end_time"])
+        window_feats = [f for f in features if float(f["start"]) < end and float(f["end"]) > start]
+        if not window_feats:
+            corrected.append(seed)
+            continue
+
+        avg_tension = sum(float(f.get("tension_hint", 0.0)) for f in window_feats) / len(window_feats)
+        avg_speech = sum(float(f.get("speech_likelihood", 0.0)) for f in window_feats) / len(window_feats)
+
+        impact = float(seed.get("audio_impact_score", 0.0))
+        if avg_tension > 0.5:
+            impact = min(1.0, impact + avg_tension * 0.1)
+        if avg_speech < 0.2:
+            impact = impact * 0.85
+
+        corrected.append({
+            **seed,
+            "audio_impact_score": round(impact, 3),
+            "avg_tension_hint": round(avg_tension, 3),
+            "avg_speech_likelihood": round(avg_speech, 3),
+        })
+
+    return corrected
+
+
+def generate_audio_seeds_live(
+    audio_path: Path | None,
+    duration_seconds: float,
+    *,
+    backend: str = "ffmpeg",
+    librosa_enabled: bool = False,
+) -> list[dict]:
+    """Track C 메인 진입점. ebur128 v2를 기본 경로로 사용.
+
+    Args:
+        audio_path: 오디오 파일 경로. None이면 빈 목록 반환.
+        duration_seconds: 에피소드 길이 (초).
+        backend: "ffmpeg" | "librosa" | "auto"
+        librosa_enabled: True면 librosa 특징 추출을 강제 시도.
+
+    각 seed dict에 audio_seed_backend, audio_profile_segment_count,
+    audio_feature_backend 필드가 추가된다.
+    """
+    if audio_path is None:
+        return []
+
+    seeds = generate_audio_seeds_v2(audio_path, duration_seconds)
+    audio_backend = "ebur128_v2"
+
+    if not seeds:
+        seeds = generate_audio_seeds(audio_path, duration_seconds)
+        audio_backend = "astats_fallback"
+
+    # optional librosa 보정
+    if seeds and (librosa_enabled or backend in ("librosa", "auto")):
+        try:
+            from app.services.audio_analysis_service import (  # local import — optional dep
+                compute_audio_emotion_scores,
+                extract_audio_features,
+            )
+            adv_backend = backend if backend in ("librosa", "auto") else "auto"
+            features = extract_audio_features(audio_path, backend=adv_backend)
+            if features:
+                emotion_features = compute_audio_emotion_scores(features)
+                if emotion_features and "tension_hint" in emotion_features[0]:
+                    seeds = _apply_advanced_feature_corrections(seeds, emotion_features)
+                    audio_backend = "librosa"
+        except Exception:
+            pass  # librosa 없거나 실패 → 기존 seeds 그대로
+
+    expected_seg_count = int(duration_seconds / SEGMENT_LENGTH_SEC) + 1
+    for seed in seeds:
+        seed["audio_seed_backend"] = audio_backend
+        seed["audio_profile_segment_count"] = expected_seg_count
+        seed["audio_feature_backend"] = backend
+
+    return seeds
+
+
 def generate_audio_seeds(
     audio_path: Path | None,
     duration_seconds: float,

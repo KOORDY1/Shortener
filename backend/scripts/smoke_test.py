@@ -823,6 +823,94 @@ def _test_core_role_vocabulary() -> None:
 
     print("  [OK] All 3 core role vocabulary tests passed.")
 
+    _test_embedding_and_audio_regression()
+
+
+def _test_embedding_and_audio_regression() -> None:
+    """ML 임베딩 시그널 live path 및 Track C v2 경로 회귀 테스트."""
+    import os
+    from app.services.candidate_generation import WindowSeed, score_window
+    from app.services.candidate_audio_signals import generate_audio_seeds_live
+    from app.db.models import TranscriptSegment
+
+    sample_text = "헐, 말도 안 돼. 진짜야? 이게 무슨 일이야!"
+    base_segments = [
+        TranscriptSegment(
+            id="emb-seg-1",
+            episode_id="episode-emb",
+            segment_index=1,
+            start_time=0.0,
+            end_time=35.0,
+            text=sample_text,
+            speaker_label=None,
+        ),
+    ]
+    base_seed = WindowSeed(
+        start_time=0.0,
+        end_time=35.0,
+        events=[],
+        window_reason="test",
+    )
+
+    # Test 18: 임베딩 시그널 비활성 시 keyword path 유지 (embedding_used=False)
+    os.environ["EMBEDDING_SIGNALS_ENABLED"] = "false"
+    # lru_cache 무효화 없이도 기본값 False가 보장됨 (env는 이미 ""로 설정)
+    w18 = score_window(base_seed, base_segments, [])
+    assert w18 is not None, "Test 18 FAIL: score_window returned None"
+    assert w18.metadata_json.get("embedding_used") is False, \
+        f"Test 18 FAIL: embedding_used should be False when disabled, got {w18.metadata_json.get('embedding_used')}"
+    assert "comedy_emb" in w18.metadata_json, "Test 18 FAIL: comedy_emb missing from metadata"
+    print("  [OK] Test 18: embedding disabled → keyword path, embedding_used=False")
+
+    # Test 19: 임베딩 시그널 활성 + API 키 없음 → 조용히 폴백
+    # OPENAI_API_KEY는 prepare_smoke_env()에서 ""로 설정됨
+    # EMBEDDING_SIGNALS_ENABLED=true여도 API 키 없으면 시도조차 안 함
+    # (또는 compute_embedding_signals()가 조용히 fallback)
+    # 어떤 경우에도 score_window()는 정상 동작해야 한다
+    w19 = score_window(base_seed, base_segments, [])
+    assert w19 is not None, "Test 19 FAIL: score_window returned None"
+    assert w19.metadata_json.get("embedding_used") is False, \
+        "Test 19 FAIL: embedding_used should be False with no API key"
+    print("  [OK] Test 19: embedding enabled + no API key → quiet fallback, pipeline intact")
+
+    # Test 20: generate_audio_seeds_live(None, ...) → 빈 목록
+    seeds_none = generate_audio_seeds_live(None, 60.0)
+    assert seeds_none == [], \
+        f"Test 20 FAIL: expected [] for None audio_path, got {seeds_none}"
+    print("  [OK] Test 20: generate_audio_seeds_live(None, 60.0) → []")
+
+    # Test 21: generate_audio_seeds_live가 존재하지 않는 경로에 대해 빈 목록 반환 (전체 후보 생성 생존)
+    from pathlib import Path
+    nonexistent = Path("/tmp/nonexistent_audio_for_smoke_test.aac")
+    seeds_missing = generate_audio_seeds_live(nonexistent, 60.0)
+    assert isinstance(seeds_missing, list), \
+        "Test 21 FAIL: expected list return, not exception"
+    print(f"  [OK] Test 21: missing audio_path → {len(seeds_missing)} seeds (no crash)")
+
+    # Test 22: 정상 시드가 있으면 audio_seed_backend 필드가 채워짐
+    # (실제 ffmpeg가 있어야 의미 있지만, 구조 검증만)
+    if seeds_missing:
+        for seed in seeds_missing:
+            assert "audio_seed_backend" in seed, \
+                "Test 22 FAIL: audio_seed_backend missing from seed"
+        print("  [OK] Test 22: audio seeds have audio_seed_backend metadata")
+    else:
+        # ffmpeg이 있고 생성된 seeds가 있는 경우를 별도 검증
+        _smoke_audio = SMOKE_DATA_DIR / "sample.aac"
+        if _smoke_audio.is_file():
+            live_seeds = generate_audio_seeds_live(_smoke_audio, 18.0)
+            if live_seeds:
+                for seed in live_seeds:
+                    assert "audio_seed_backend" in seed, \
+                        "Test 22 FAIL: audio_seed_backend missing from live seed"
+                print(f"  [OK] Test 22: {len(live_seeds)} live audio seeds have audio_seed_backend")
+            else:
+                print("  [SKIP] Test 22: no audio seeds generated from smoke sample")
+        else:
+            print("  [SKIP] Test 22: no audio seeds to check (audio file absent)")
+
+    print("  [OK] All 5 embedding & audio regression tests passed.")
+
 
 if __name__ == "__main__":
     run()

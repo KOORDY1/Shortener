@@ -53,8 +53,13 @@ class Settings(BaseSettings):
     default_language: str = "ko"
 
     # 오디오 분석 백엔드
-    audio_analysis_backend: str = "ffmpeg"  # "ffmpeg" | "librosa"
+    audio_analysis_backend: str = "ffmpeg"  # "ffmpeg" | "librosa" | "auto"
     audio_librosa_enabled: bool = False
+
+    # ML 임베딩 언어 시그널 (기본 비활성 — OPENAI_API_KEY 필요)
+    embedding_signals_enabled: bool = False
+    embedding_signals_model: str = "text-embedding-3-small"
+    embedding_signals_max_chars: int = 1000
 
     # LLM Arc Judge
     llm_arc_judge_enabled: bool = False

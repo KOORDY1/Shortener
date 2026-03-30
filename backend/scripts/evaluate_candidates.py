@@ -164,6 +164,17 @@ def evaluate_pipeline(
             if isinstance(c.metadata_json, dict) and c.metadata_json.get("composite")
         )
 
+        audio_track_candidate_count = sum(
+            1 for c in candidates
+            if isinstance(c.metadata_json, dict)
+            and c.metadata_json.get("candidate_track") == "audio"
+        )
+
+        embedding_used_candidate_count = sum(
+            1 for c in candidates
+            if isinstance(c.metadata_json, dict) and c.metadata_json.get("embedding_used")
+        )
+
         results[episode_id] = {
             "candidate_count": len(candidates),
             "golden_count": len(golden_entries),
@@ -171,6 +182,8 @@ def evaluate_pipeline(
             "score_stats": score_stats,
             "timeline_coverage": coverage,
             "n_composite": n_composite,
+            "audio_track_candidate_count": audio_track_candidate_count,
+            "embedding_used_candidate_count": embedding_used_candidate_count,
         }
 
     return results
@@ -190,6 +203,8 @@ def _print_report(results: dict[str, dict]) -> None:
         print(f"  점수 — 평균: {sc['mean']:.2f}, std: {sc['std']:.2f}, top3_avg: {sc['top3_avg']:.2f}")
         print(f"  타임라인 커버리지: {stats['timeline_coverage']:.1%}")
         print(f"  복합 후보 수: {stats['n_composite']}")
+        print(f"  오디오 트랙 후보 수: {stats.get('audio_track_candidate_count', 'N/A')}")
+        print(f"  임베딩 시그널 사용 후보 수: {stats.get('embedding_used_candidate_count', 'N/A')}")
         print()
 
 

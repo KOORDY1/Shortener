@@ -17,6 +17,8 @@ from app.services.candidate_events import (
     serialize_event,
 )
 from app.services.candidate_language_signals import (
+    EmbeddingSignals,
+    compute_embedding_signals,
     detect_language_hint,
     dominant_entities,
     extract_token_stream,
@@ -33,7 +35,7 @@ from app.services.candidate_structure_signals import (
     standalone_clarity,
 )
 from app.services.candidate_visual_signals import compute_visual_impact, generate_visual_seeds
-from app.services.candidate_audio_signals import generate_audio_seeds
+from app.services.candidate_audio_signals import generate_audio_seeds_live
 from app.core.config import get_settings
 
 MIN_WINDOW_SEC = 30.0
@@ -392,6 +394,28 @@ def score_window(
         max_visual_impact = 0.0
         max_audio_impact = 0.0
 
+    # ML 임베딩 시그널 — EMBEDDING_SIGNALS_ENABLED=true + API 키 존재 시만 활성
+    _EMB_ALPHA = 0.8  # 임베딩 시그널 혼합 계수 (보수적)
+    _settings = get_settings()
+    emb_signals: EmbeddingSignals | None = None
+    emb_attempted = False
+    if _settings.embedding_signals_enabled and _settings.openai_api_key:
+        emb_attempted = True
+        text_for_emb = excerpt[:_settings.embedding_signals_max_chars]
+        if text_for_emb.strip():
+            emb_signals = compute_embedding_signals(
+                text_for_emb,
+                api_key=_settings.openai_api_key,
+                model=_settings.embedding_signals_model,
+            )
+
+    if emb_signals is not None and emb_signals["embedding_used"]:
+        comedy_signal = max(comedy_signal, emb_signals["comedy_emb"] * _EMB_ALPHA)
+        emotion_signal = max(emotion_signal, emb_signals["emotion_emb"] * _EMB_ALPHA)
+        tension_signal = max(tension_signal, emb_signals["tension_emb"] * _EMB_ALPHA)
+        reaction_signal = max(reaction_signal, emb_signals["reaction_emb"] * _EMB_ALPHA)
+        payoff_signal = max(payoff_signal, emb_signals["payoff_emb"] * _EMB_ALPHA)
+
     visual_impact = max(max_visual_impact, track_visual_impact)
     audio_impact = max(max_audio_impact, track_audio_impact)
     if visual_impact < 0.01 and episode_avg_cut_rate > 0:
@@ -463,6 +487,13 @@ def score_window(
     )
     core_support = extract_core_support_summary(padded_spans)
 
+    _embedding_used = bool(emb_signals and emb_signals["embedding_used"])
+    _emb_comedy = round(emb_signals["comedy_emb"] if emb_signals else 0.0, 4)
+    _emb_emotion = round(emb_signals["emotion_emb"] if emb_signals else 0.0, 4)
+    _emb_tension = round(emb_signals["tension_emb"] if emb_signals else 0.0, 4)
+    _emb_reaction = round(emb_signals["reaction_emb"] if emb_signals else 0.0, 4)
+    _emb_payoff = round(emb_signals["payoff_emb"] if emb_signals else 0.0, 4)
+
     return ScoredWindow(
         start_time=round(seed.start_time, 3),
         end_time=round(seed.end_time, 3),
@@ -488,6 +519,11 @@ def score_window(
             "visual_impact": round(visual_impact, 3),
             "audio_impact": round(audio_impact, 3),
             "single_arc_complete_score": round(single_arc_complete, 3),
+            "comedy_emb": float(_emb_comedy),
+            "emotion_emb": float(_emb_emotion),
+            "tension_emb": float(_emb_tension),
+            "reaction_emb": float(_emb_reaction),
+            "payoff_emb": float(_emb_payoff),
         },
         title_hint=_title_from_segments(segments, seed.start_time, seed.end_time),
         metadata_json={
@@ -525,6 +561,13 @@ def score_window(
             "visual_impact": round(visual_impact, 4),
             "audio_impact": round(audio_impact, 4),
             "ranking_focus": ranking_focus,
+            "embedding_used": _embedding_used,
+            "embedding_attempted": emb_attempted,
+            "comedy_emb": _emb_comedy,
+            "emotion_emb": _emb_emotion,
+            "tension_emb": _emb_tension,
+            "reaction_emb": _emb_reaction,
+            "payoff_emb": _emb_payoff,
         },
     )
 
@@ -580,9 +623,18 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
         ws._visual_impact_score = vsd.get("visual_impact_score", 0.0)  # type: ignore[attr-defined]
         dialogue_seeds.append(ws)
 
-    # Track C: audio-reaction seeds
+    # 설정된 scoring_profile로 가중치 로드 (Track C에서도 settings 필요)
+    settings = get_settings()
+    weights = ScoringWeights.from_profile(settings.scoring_profile)
+
+    # Track C: audio-reaction seeds (ebur128 v2 기본 경로)
     audio_path = _resolve_audio_path(episode)
-    audio_seed_dicts = generate_audio_seeds(audio_path, float(episode.duration_seconds or timeline_end))
+    audio_seed_dicts = generate_audio_seeds_live(
+        audio_path,
+        float(episode.duration_seconds or timeline_end),
+        backend=settings.audio_analysis_backend,
+        librosa_enabled=settings.audio_librosa_enabled,
+    )
     for asd in audio_seed_dicts:
         ws = WindowSeed(
             start_time=asd["start_time"],
@@ -593,10 +645,6 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
         ws._candidate_track = "audio"  # type: ignore[attr-defined]
         ws._audio_impact_score = asd.get("audio_impact_score", 0.0)  # type: ignore[attr-defined]
         dialogue_seeds.append(ws)
-
-    # 설정된 scoring_profile로 가중치 로드
-    settings = get_settings()
-    weights = ScoringWeights.from_profile(settings.scoring_profile)
 
     all_seeds = dialogue_seeds
     scored = [
