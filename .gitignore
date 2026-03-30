@@ -36,6 +36,4 @@ frontend/.env*.local
 *.log
 
 # Local docs / generated frontend files
-claude.md
-frontend/next-env.d.ts
 frontend/tsconfig.tsbuildinfo
