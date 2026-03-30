@@ -18,7 +18,7 @@ from app.services.analysis_metadata import mark_analysis_completed, mark_analysi
 from app.services.candidate_spans import candidate_clip_spans, clip_spans_total_duration
 from app.services.candidate_rerank import rerank_candidates_for_episode
 from app.services.storage_service import episode_root, write_placeholder
-from app.services.candidate_generation import build_candidates_for_episode, dedupe_scored_windows
+from app.services.candidate_generation import ScoredWindow, build_candidates_for_episode, dedupe_scored_windows
 from app.services.composite_candidate_generation import build_composite_candidates
 from app.services.keyframe_extraction import extract_keyframes_for_episode
 from app.services.media_probe import probe_media_metadata
@@ -385,7 +385,32 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
 
     mark_analysis_running(episode, "generate_candidates")
     scored_windows = build_candidates_for_episode(db, episode_id)
-    scored_windows.extend(build_composite_candidates(scored_windows))
+    composite_windows = build_composite_candidates(scored_windows)
+
+    # contiguous 우선 원칙: contiguous complete arc가 있으면 composite에
+    # composite_advantage_reason이 없는 한 감점
+    best_contiguous_arc = max(
+        (float(w.metadata_json.get("single_arc_complete_score", 0.0)) for w in scored_windows),
+        default=0.0,
+    )
+    for cw in composite_windows:
+        meta = dict(cw.metadata_json)
+        arc_payoff = float(meta.get("arc_payoff_strength", 0.0))
+        if best_contiguous_arc >= 0.3 and arc_payoff < best_contiguous_arc * 1.2:
+            cw_score = cw.total_score * 0.9
+            meta["composite_advantage_reason"] = "contiguous_preferred"
+        else:
+            cw_score = cw.total_score
+            meta["composite_advantage_reason"] = "composite_arc_stronger"
+        scored_windows.append(ScoredWindow(
+            start_time=cw.start_time,
+            end_time=cw.end_time,
+            total_score=round(cw_score, 2),
+            scores_json=cw.scores_json,
+            title_hint=cw.title_hint,
+            metadata_json=meta,
+        ))
+
     scored_windows = rerank_candidates_for_episode(
         scored_windows,
         provider="heuristic_noop",

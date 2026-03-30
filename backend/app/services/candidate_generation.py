@@ -1,8 +1,9 @@
-"""내용 구조 중심 contiguous 후보 생성기."""
+"""내용 구조 중심 contiguous 후보 생성기 (multi-track)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
 from sqlalchemy import select
@@ -30,6 +31,8 @@ from app.services.candidate_structure_signals import (
     reaction_shift_score,
     standalone_clarity,
 )
+from app.services.candidate_visual_signals import compute_visual_impact, generate_visual_seeds
+from app.services.candidate_audio_signals import generate_audio_seeds
 
 MIN_WINDOW_SEC = 30.0
 MAX_WINDOW_SEC = 180.0
@@ -317,6 +320,8 @@ def score_window(
     seed: WindowSeed,
     segments: Sequence[TranscriptSegment],
     shots: Sequence[Shot],
+    *,
+    episode_avg_cut_rate: float = 0.0,
 ) -> ScoredWindow | None:
     duration = seed.end_time - seed.start_time
     if duration < MIN_WINDOW_SEC or duration > MAX_WINDOW_SEC:
@@ -331,6 +336,10 @@ def score_window(
     all_entities = dominant_entities(tokens, limit=8)
     events = seed.events
 
+    candidate_track = getattr(seed, "_candidate_track", None) or "dialogue"
+    track_visual_impact = getattr(seed, "_visual_impact_score", 0.0) or 0.0
+    track_audio_impact = getattr(seed, "_audio_impact_score", 0.0) or 0.0
+
     if events:
         comedy_signal = max((event.tone_signals["comedy_signal"] for event in events), default=0.0)
         emotion_signal = max((event.tone_signals["emotion_signal"] for event in events), default=0.0)
@@ -339,9 +348,21 @@ def score_window(
         reaction_signal = max((event.tone_signals["reaction_signal"] for event in events), default=0.0)
         payoff_signal = max((event.tone_signals["payoff_signal"] for event in events), default=0.0)
         question_signal = max((event.tone_signals["question_signal"] for event in events), default=0.0)
+        max_visual_impact = max((e.visual_impact_score for e in events), default=0.0)
+        max_audio_impact = max((e.audio_impact_score for e in events), default=0.0)
     else:
         comedy_signal = emotion_signal = surprise_signal = tension_signal = reaction_signal = 0.0
         payoff_signal = question_signal = 0.0
+        max_visual_impact = 0.0
+        max_audio_impact = 0.0
+
+    visual_impact = max(max_visual_impact, track_visual_impact)
+    audio_impact = max(max_audio_impact, track_audio_impact)
+    if visual_impact < 0.01 and episode_avg_cut_rate > 0:
+        window_shots = [s for s in shots if float(s.start_time) < seed.end_time and float(s.end_time) > seed.start_time]
+        visual_impact = compute_visual_impact(
+            window_shots, duration, episode_avg_cut_rate, speech_coverage,
+        )
 
     dialogue_density = dialogue_turn_density(events, duration) if events else min(1.0, char_rate / 20.0)
     qa_score = question_answer_score(events)
@@ -352,21 +373,58 @@ def score_window(
     hook_score = hookability(events) if events else min(1.0, question_signal + surprise_signal)
     cut_density_score = min(1.0, cuts_inside / max(1.0, duration / 8.0))
 
+    visual_audio_bonus = min(
+        visual_impact * 0.5 + audio_impact * 0.5,
+        max(clarity_score, 0.3) * 1.2,
+    )
+
+    # contiguous arc completeness: setup→payoff가 닫히는 정도
+    single_arc_complete = 0.0
+    if events and len(events) >= 2:
+        first_setup = events[0].setup_score
+        last_payoff = events[-1].payoff_score
+        single_arc_complete = min(
+            1.0,
+            first_setup * 0.3 + last_payoff * 0.4 + entity_score * 0.3,
+        )
+
+    contiguous_bonus = 0.0
+    if single_arc_complete >= 0.25:
+        contiguous_bonus = single_arc_complete * 0.08
+
     normalized_total = min(
         1.0,
-        speech_coverage * 0.18
-        + dialogue_density * 0.12
+        speech_coverage * 0.12
+        + dialogue_density * 0.10
         + qa_score * 0.12
         + reaction_score * 0.12
-        + payoff_score * 0.1
-        + entity_score * 0.08
-        + clarity_score * 0.12
-        + hook_score * 0.1
-        + max(comedy_signal, emotion_signal, surprise_signal, tension_signal, reaction_signal) * 0.1
-        + cut_density_score * 0.06,
+        + payoff_score * 0.14
+        + entity_score * 0.06
+        + clarity_score * 0.10
+        + hook_score * 0.10
+        + max(comedy_signal, emotion_signal, surprise_signal, tension_signal, reaction_signal) * 0.06
+        + cut_density_score * 0.03
+        + visual_audio_bonus * 0.05
+        + contiguous_bonus,
     )
     total_score = round(max(1.0, normalized_total * 10.0), 2)
     ranking_focus = dominant_focus(events)
+
+    from app.services.candidate_spans import extract_core_support_summary, pad_spans_to_minimum
+
+    core_clip_spans: list[dict] = [{
+        "start_time": round(seed.start_time, 3),
+        "end_time": round(seed.end_time, 3),
+        "order": 0,
+        "role": "main",
+    }]
+    timeline_end_for_pad = max(seed.end_time + 30.0, seed.end_time)
+    padded_spans, support_added = pad_spans_to_minimum(
+        core_clip_spans,
+        timeline_start=0.0,
+        timeline_end=timeline_end_for_pad,
+    )
+    core_support = extract_core_support_summary(padded_spans)
 
     return ScoredWindow(
         start_time=round(seed.start_time, 3),
@@ -390,10 +448,16 @@ def score_window(
             "speech_coverage": round(speech_coverage, 3),
             "chars_per_sec": round(char_rate, 2),
             "cuts_inside": float(cuts_inside),
+            "visual_impact": round(visual_impact, 3),
+            "audio_impact": round(audio_impact, 3),
+            "single_arc_complete_score": round(single_arc_complete, 3),
         },
         title_hint=_title_from_segments(segments, seed.start_time, seed.end_time),
         metadata_json={
-            "generated_by": "structure_heuristic_v1",
+            "generated_by": "structure_heuristic_v2",
+            "candidate_track": candidate_track,
+            "arc_form": "contiguous",
+            "single_arc_complete_score": round(single_arc_complete, 4),
             "window_reason": seed.window_reason,
             "window_duration_sec": round(duration, 3),
             "speech_coverage": round(speech_coverage, 4),
@@ -404,6 +468,9 @@ def score_window(
             "language_hint": detect_language_hint(excerpt),
             "dominant_entities": all_entities,
             "source_events": [serialize_event(event) for event in events],
+            "clip_spans": padded_spans,
+            "support_added_sec": support_added,
+            **core_support,
             "dialogue_turn_density": round(dialogue_density, 4),
             "question_answer_score": round(qa_score, 4),
             "reaction_shift_score": round(reaction_score, 4),
@@ -418,6 +485,8 @@ def score_window(
             "reaction_signal": round(reaction_signal, 4),
             "payoff_signal": round(payoff_signal, 4),
             "question_signal": round(question_signal, 4),
+            "visual_impact": round(visual_impact, 4),
+            "audio_impact": round(audio_impact, 4),
             "ranking_focus": ranking_focus,
         },
     )
@@ -425,6 +494,16 @@ def score_window(
 
 def _nms(windows: list[ScoredWindow]) -> list[ScoredWindow]:
     return dedupe_scored_windows(windows, limit=MAX_CANDIDATES)
+
+
+def _resolve_audio_path(episode: Episode) -> Path | None:
+    if not episode.audio_path:
+        return None
+    from app.core.config import get_settings
+    settings = get_settings()
+    raw = Path(episode.audio_path).expanduser()
+    path = raw.resolve() if raw.is_absolute() else (settings.resolved_storage_root / raw).resolve()
+    return path if path.is_file() else None
 
 
 def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWindow]:
@@ -446,11 +525,43 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
     )
 
     timeline_end = _episode_timeline_end(episode, shots, segments)
-    seeds = _enumerate_windows(timeline_end, segments, shots)
+    episode_avg_cut_rate = len(shots) / max(timeline_end, 1.0)
+
+    # Track A: dialogue-driven seeds
+    dialogue_seeds = _enumerate_windows(timeline_end, segments, shots)
+
+    # Track B: visual-impact seeds
+    visual_seed_dicts = generate_visual_seeds(shots, segments, timeline_end)
+    for vsd in visual_seed_dicts:
+        ws = WindowSeed(
+            start_time=vsd["start_time"],
+            end_time=vsd["end_time"],
+            events=[],
+            window_reason=vsd["window_reason"],
+        )
+        ws._candidate_track = "visual"  # type: ignore[attr-defined]
+        ws._visual_impact_score = vsd.get("visual_impact_score", 0.0)  # type: ignore[attr-defined]
+        dialogue_seeds.append(ws)
+
+    # Track C: audio-reaction seeds
+    audio_path = _resolve_audio_path(episode)
+    audio_seed_dicts = generate_audio_seeds(audio_path, float(episode.duration_seconds or timeline_end))
+    for asd in audio_seed_dicts:
+        ws = WindowSeed(
+            start_time=asd["start_time"],
+            end_time=asd["end_time"],
+            events=[],
+            window_reason=asd["window_reason"],
+        )
+        ws._candidate_track = "audio"  # type: ignore[attr-defined]
+        ws._audio_impact_score = asd.get("audio_impact_score", 0.0)  # type: ignore[attr-defined]
+        dialogue_seeds.append(ws)
+
+    all_seeds = dialogue_seeds
     scored = [
         window
-        for seed in seeds
-        if (window := score_window(seed, segments, shots)) is not None
+        for seed in all_seeds
+        if (window := score_window(seed, segments, shots, episode_avg_cut_rate=episode_avg_cut_rate)) is not None
     ]
 
     if not scored and timeline_end < MIN_WINDOW_SEC:
@@ -482,6 +593,7 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
                 title_hint=_title_from_segments(segments, 0.0, timeline_end),
                 metadata_json={
                     "generated_by": "structure_short_episode_fallback_v1",
+                    "candidate_track": "dialogue",
                     "window_duration_sec": round(timeline_end, 3),
                     "transcript_excerpt": excerpt,
                     "dedupe_tokens": extract_tokens(excerpt)[:16],

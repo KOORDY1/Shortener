@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from typing import Sequence
+
+from app.services.candidate_events import CandidateEvent
 from app.services.candidate_generation import ScoredWindow
+from app.services.candidate_arc_search import (
+    ArcCandidate,
+    arc_to_scored_window_metadata,
+    beam_search_arcs,
+)
 
 MAX_COMPOSITE_CANDIDATES = 10
 MAX_COMPOSITE_INPUTS = 40
@@ -130,12 +138,91 @@ def _pair_reason(
     return "adjacent_dialogue_link"
 
 
+def _collect_micro_events(windows: list[ScoredWindow]) -> list[CandidateEvent]:
+    """ScoredWindow들의 source_events에서 CandidateEvent를 재구성한다."""
+    seen: set[tuple[int, int]] = set()
+    events: list[CandidateEvent] = []
+    for window in windows:
+        for ev_dict in (window.metadata_json.get("source_events") or []):
+            if not isinstance(ev_dict, dict):
+                continue
+            try:
+                st = round(float(ev_dict["start_time"]), 3)
+                et = round(float(ev_dict["end_time"]), 3)
+            except (TypeError, ValueError, KeyError):
+                continue
+            if et <= st:
+                continue
+            key = (int(round(st * 100)), int(round(et * 100)))
+            if key in seen:
+                continue
+            seen.add(key)
+            tone = ev_dict.get("tone_signals") or {}
+            events.append(CandidateEvent(
+                start_time=st,
+                end_time=et,
+                text=str(ev_dict.get("text") or ""),
+                cue_count=int(ev_dict.get("cue_count", 1)),
+                shot_count=int(ev_dict.get("shot_count", 0)),
+                event_kind=str(ev_dict.get("event_kind") or "dialogue"),
+                tone_signals=tone,
+                tokens=ev_dict.get("dominant_entities") or [],
+                dominant_entities=ev_dict.get("dominant_entities") or [],
+                source_segments=[],
+                setup_score=float(ev_dict.get("setup_score", 0.0)),
+                escalation_score=float(ev_dict.get("escalation_score", 0.0)),
+                reaction_score=float(ev_dict.get("reaction_score", 0.0)),
+                payoff_score=float(ev_dict.get("payoff_score", 0.0)),
+                standalone_score=float(ev_dict.get("standalone_score", 0.0)),
+                context_dependency_score=float(ev_dict.get("context_dependency_score", 0.0)),
+                visual_impact_score=float(ev_dict.get("visual_impact_score", 0.0)),
+                audio_impact_score=float(ev_dict.get("audio_impact_score", 0.0)),
+            ))
+    events.sort(key=lambda e: e.start_time)
+    return events
+
+
+def _arc_to_scored_window(arc: ArcCandidate) -> ScoredWindow:
+    """ArcCandidate를 ScoredWindow로 변환한다."""
+    metadata = arc_to_scored_window_metadata(arc)
+    total_score = round(max(1.0, arc.total_arc_score * 10.0), 2)
+    excerpt = metadata.get("transcript_excerpt", "")
+
+    return ScoredWindow(
+        start_time=round(arc.start_time, 3),
+        end_time=round(arc.end_time, 3),
+        total_score=total_score,
+        scores_json={
+            "total_score": total_score,
+            **{k: v for k, v in arc.arc_scores.items() if k != "total_arc_score"},
+        },
+        title_hint=(excerpt[:60] + "..." if len(excerpt) > 60 else excerpt) or f"arc {arc.start_time:.0f}-{arc.end_time:.0f}s",
+        metadata_json=metadata,
+    )
+
+
 def build_composite_candidates(windows: list[ScoredWindow]) -> list[ScoredWindow]:
+    composites: list[ScoredWindow] = []
+
+    # Phase 1: beam search arc 탐색
+    micro_events = _collect_micro_events(windows)
+    if len(micro_events) >= 2:
+        arcs = beam_search_arcs(micro_events)
+        for arc in arcs:
+            sw = _arc_to_scored_window(arc)
+            composites.append(sw)
+            if len(composites) >= MAX_COMPOSITE_CANDIDATES:
+                return composites
+
+    # Phase 2: pair heuristic fallback (beam search 결과가 부족할 때)
+    remaining_slots = MAX_COMPOSITE_CANDIDATES - len(composites)
+    if remaining_slots <= 0:
+        return composites
+
     ordered = sorted(windows, key=lambda item: item.total_score, reverse=True)[:MAX_COMPOSITE_INPUTS]
     ordered.extend(_event_pool(windows))
     ordered.sort(key=lambda item: item.total_score, reverse=True)
     ordered = ordered[:MAX_COMPOSITE_INPUTS]
-    composites: list[ScoredWindow] = []
 
     for left_index, left in enumerate(ordered):
         left_tokens = _tokens(left)
@@ -242,6 +329,7 @@ def build_composite_candidates(windows: list[ScoredWindow]) -> list[ScoredWindow
                 "question_answer_match": round(question_answer_match, 3),
                 "reaction_shift_score": round(reaction_shift, 3),
             }
+            metadata["candidate_track"] = "dialogue"
             composites.append(
                 ScoredWindow(
                     start_time=round(left.start_time, 3),

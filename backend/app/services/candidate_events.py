@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from app.db.models import Shot, TranscriptSegment
@@ -28,6 +28,15 @@ class CandidateEvent:
     tokens: list[str]
     dominant_entities: list[str]
     source_segments: list[dict[str, Any]]
+    # narrative role scores (0~1)
+    setup_score: float = 0.0
+    escalation_score: float = 0.0
+    reaction_score: float = 0.0
+    payoff_score: float = 0.0
+    standalone_score: float = 0.0
+    context_dependency_score: float = 0.0
+    visual_impact_score: float = 0.0
+    audio_impact_score: float = 0.0
 
 
 def _shot_count_in_range(shots: Sequence[Shot], start_time: float, end_time: float) -> int:
@@ -116,6 +125,41 @@ def _build_event(
     )
 
 
+def _apply_role_scores(
+    events: list[CandidateEvent],
+    shots: Sequence[Shot],
+) -> None:
+    """Compute and assign role scores to every event in-place."""
+    from app.services.candidate_role_scoring import compute_role_scores
+
+    total_duration = max(
+        0.01,
+        (events[-1].end_time - events[0].start_time) if events else 1.0,
+    )
+    total_shots = sum(e.shot_count for e in events)
+    episode_avg_shot_rate = total_shots / total_duration
+
+    for idx, event in enumerate(events):
+        prev_ev = events[idx - 1] if idx > 0 else None
+        next_ev = events[idx + 1] if idx + 1 < len(events) else None
+        scores = compute_role_scores(
+            event,
+            prev_event=prev_ev,
+            next_event=next_ev,
+            is_first=(idx == 0),
+            is_last=(idx == len(events) - 1),
+            episode_avg_shot_rate=episode_avg_shot_rate,
+        )
+        event.setup_score = scores["setup_score"]
+        event.escalation_score = scores["escalation_score"]
+        event.reaction_score = scores["reaction_score"]
+        event.payoff_score = scores["payoff_score"]
+        event.standalone_score = scores["standalone_score"]
+        event.context_dependency_score = scores["context_dependency_score"]
+        event.visual_impact_score = scores["visual_impact_score"]
+        event.audio_impact_score = scores["audio_impact_score"]
+
+
 def build_micro_events(
     segments: Sequence[TranscriptSegment],
     shots: Sequence[Shot],
@@ -177,6 +221,10 @@ def build_micro_events(
                 merged[-1] = merged_event
         else:
             merged.append(event)
+
+    if merged:
+        _apply_role_scores(merged, shots)
+
     return merged
 
 
@@ -191,4 +239,12 @@ def serialize_event(event: CandidateEvent) -> dict[str, Any]:
         "event_kind": event.event_kind,
         "tone_signals": event.tone_signals,
         "dominant_entities": event.dominant_entities,
+        "setup_score": event.setup_score,
+        "escalation_score": event.escalation_score,
+        "reaction_score": event.reaction_score,
+        "payoff_score": event.payoff_score,
+        "standalone_score": event.standalone_score,
+        "context_dependency_score": event.context_dependency_score,
+        "visual_impact_score": event.visual_impact_score,
+        "audio_impact_score": event.audio_impact_score,
     }
