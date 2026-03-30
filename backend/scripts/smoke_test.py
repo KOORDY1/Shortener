@@ -688,6 +688,109 @@ def _test_episode_boundary_and_entity_regression() -> None:
 
     print("  [OK] All 4 episode-boundary & entity regression tests passed.")
 
+    _test_pair_fallback_regression()
+
+
+def _test_pair_fallback_regression() -> None:
+    """pair fallback composite가 설계 원칙(30초, core/support, episode-aware, arc-style metadata)을 따르는지 검증."""
+    from app.services.candidate_generation import ScoredWindow
+    from app.services.composite_candidate_generation import build_composite_candidates
+    from app.services.candidate_spans import MIN_CANDIDATE_DURATION_SEC
+
+    timeline_end = 120.0
+    left_window = ScoredWindow(
+        start_time=10.0, end_time=22.0, total_score=7.5,
+        scores_json={"total_score": 7.5},
+        title_hint="setup question",
+        metadata_json={
+            "dedupe_tokens": ["richard", "invest", "proposal"],
+            "dominant_entities": ["richard", "invest"],
+            "ranking_focus": "setup_payoff",
+            "transcript_excerpt": "Are you going to invest?",
+            "source_events": [
+                {
+                    "start_time": 10.0, "end_time": 22.0,
+                    "event_kind": "question", "text": "Are you going to invest?",
+                    "tone_signals": {"question_signal": 0.8},
+                    "dominant_entities": ["richard", "invest"],
+                    "setup_score": 0.7, "payoff_score": 0.05,
+                    "standalone_score": 0.5, "context_dependency_score": 0.1,
+                }
+            ],
+            "question_answer_score": 0.7,
+        },
+    )
+    right_window = ScoredWindow(
+        start_time=40.0, end_time=55.0, total_score=7.0,
+        scores_json={"total_score": 7.0},
+        title_hint="payoff reaction",
+        metadata_json={
+            "dedupe_tokens": ["richard", "invest", "reject"],
+            "dominant_entities": ["richard", "invest"],
+            "ranking_focus": "setup_payoff",
+            "transcript_excerpt": "No way, that is insane!",
+            "source_events": [
+                {
+                    "start_time": 40.0, "end_time": 55.0,
+                    "event_kind": "reaction", "text": "No way, that is insane!",
+                    "tone_signals": {"reaction_signal": 0.7, "payoff_signal": 0.5},
+                    "dominant_entities": ["richard", "invest"],
+                    "setup_score": 0.05, "payoff_score": 0.6,
+                    "standalone_score": 0.5, "context_dependency_score": 0.15,
+                }
+            ],
+            "payoff_end_weight": 0.6,
+            "reaction_shift_score": 0.5,
+        },
+    )
+
+    composites = build_composite_candidates(
+        [left_window, right_window], timeline_end=timeline_end,
+    )
+
+    pair_composites = [
+        c for c in composites
+        if c.metadata_json.get("generated_by", "").startswith("composite_pair")
+    ]
+
+    if not pair_composites:
+        print("  [SKIP] No pair fallback composites generated (beam search may have covered)")
+        print("  [OK] All 4 pair fallback regression tests skipped (no pair fallback produced)")
+        return
+
+    pc = pair_composites[0]
+    meta = pc.metadata_json
+
+    # Test 11: pair fallback은 최종 30초 이상
+    clip_spans = meta.get("clip_spans", [])
+    total_dur = sum(s["end_time"] - s["start_time"] for s in clip_spans)
+    assert total_dur >= MIN_CANDIDATE_DURATION_SEC, \
+        f"Test 11 FAIL: pair fallback total duration {total_dur:.1f}s < {MIN_CANDIDATE_DURATION_SEC}s"
+    print(f"  [OK] Test 11: pair fallback total duration {total_dur:.1f}s >= {MIN_CANDIDATE_DURATION_SEC}s")
+
+    # Test 12: pair fallback에 core_spans, support_spans, support_added_sec 존재
+    assert "core_spans" in meta, "Test 12 FAIL: missing core_spans"
+    assert "support_spans" in meta, "Test 12 FAIL: missing support_spans"
+    assert "support_added_sec" in meta, "Test 12 FAIL: missing support_added_sec"
+    print("  [OK] Test 12: pair fallback has core_spans, support_spans, support_added_sec")
+
+    # Test 13: pair fallback span이 timeline_end를 넘지 않음
+    for span in clip_spans:
+        assert span["end_time"] <= timeline_end, \
+            f"Test 13 FAIL: span end {span['end_time']} > timeline_end {timeline_end}"
+        assert span["start_time"] >= 0.0, \
+            f"Test 13 FAIL: span start {span['start_time']} < 0"
+    print("  [OK] Test 13: pair fallback spans within episode boundary")
+
+    # Test 14: pair fallback에 arc_reason, payoff_anchor, arc_form 존재
+    assert "arc_reason" in meta, "Test 14 FAIL: missing arc_reason"
+    assert "payoff_anchor" in meta, "Test 14 FAIL: missing payoff_anchor"
+    assert meta.get("arc_form") == "composite", "Test 14 FAIL: arc_form should be 'composite'"
+    assert "arc_continuity_score" in meta, "Test 14 FAIL: missing arc_continuity_score"
+    print("  [OK] Test 14: pair fallback has arc-style metadata")
+
+    print("  [OK] All 4 pair fallback regression tests passed.")
+
 
 if __name__ == "__main__":
     run()

@@ -275,8 +275,41 @@ def build_composite_candidates(
                 reaction_shift=reaction_shift,
                 same_focus=same_focus,
             )
-            left_role = "setup" if question_answer_match >= 0.45 or reaction_shift >= 0.4 else "dialogue"
-            right_role = "payoff" if question_answer_match >= 0.45 else "reaction" if reaction_shift >= 0.45 else "followup"
+            left_core_role = "core_setup" if question_answer_match >= 0.45 or reaction_shift >= 0.4 else "core_dialogue"
+            right_core_role = "core_payoff" if question_answer_match >= 0.45 else "core_reaction" if reaction_shift >= 0.45 else "core_followup"
+
+            core_spans: list[dict] = [
+                {
+                    "start_time": round(left.start_time, 3),
+                    "end_time": round(left.end_time, 3),
+                    "order": 0,
+                    "role": left_core_role,
+                },
+                {
+                    "start_time": round(right.start_time, 3),
+                    "end_time": round(right.end_time, 3),
+                    "order": 1,
+                    "role": right_core_role,
+                },
+            ]
+
+            from app.services.candidate_spans import (
+                MIN_CANDIDATE_DURATION_SEC,
+                extract_core_support_summary,
+                pad_spans_to_minimum,
+            )
+
+            padded_spans, support_added_sec = pad_spans_to_minimum(
+                core_spans,
+                timeline_start=0.0,
+                timeline_end=timeline_end,
+                min_duration=MIN_CANDIDATE_DURATION_SEC,
+            )
+            core_support = extract_core_support_summary(padded_spans)
+
+            if core_support["total_duration_sec"] < MIN_CANDIDATE_DURATION_SEC:
+                continue
+
             title_hint = f"{left.title_hint} / {right.title_hint}"
             excerpt = " ".join(
                 part
@@ -286,43 +319,45 @@ def build_composite_candidates(
                 ]
                 if part
             )[:280]
+
+            left_entities = set(left.metadata_json.get("dominant_entities") or [])
+            right_entities = set(right.metadata_json.get("dominant_entities") or [])
+            merged_entities = sorted(left_entities | right_entities)[:8]
+
+            right_payoff_score = float(right.metadata_json.get("payoff_end_weight", 0.0) or 0.0)
+            right_reaction_score_val = float(right.metadata_json.get("reaction_shift_score", 0.0) or 0.0)
+
+            arc_reason = f"pair_{pair_reason}"
+            arc_continuity_score = round(max(entity_overlap, overlap_score * 0.7), 3)
+
             metadata = {
-                "generated_by": "composite_pair_v1",
+                "generated_by": "composite_pair_v2",
                 "composite": True,
-                "experimental": True,
+                "candidate_track": "dialogue",
+                "arc_form": "composite",
+                "arc_reason": arc_reason,
+                "pair_reason": pair_reason,
                 "primary_span_index": 0,
-                "clip_spans": [
-                    {
-                        "start_time": round(left.start_time, 3),
-                        "end_time": round(left.end_time, 3),
-                        "order": 0,
-                        "role": left_role,
-                    },
-                    {
-                        "start_time": round(right.start_time, 3),
-                        "end_time": round(right.end_time, 3),
-                        "order": 1,
-                        "role": right_role,
-                    },
-                ],
+                "clip_spans": padded_spans,
+                **core_support,
+                "support_added_sec": support_added_sec,
                 "transcript_excerpt": excerpt,
                 "dedupe_tokens": sorted(left_tokens | right_tokens)[:16],
+                "dominant_entities": merged_entities,
                 "ranking_focus": left_focus or right_focus or "composite",
+                "arc_continuity_score": arc_continuity_score,
+                "single_arc_complete_score": 0.0,
                 "composite_similarity": round(overlap_score, 3),
                 "span_gap_sec": round(gap, 3),
-                "pair_reason": pair_reason,
                 "entity_overlap": round(entity_overlap, 3),
                 "question_answer_match": round(question_answer_match, 3),
                 "reaction_shift": round(reaction_shift, 3),
-                "left_role_score": round(max(question_answer_match, reaction_shift, overlap_score), 3),
-                "right_role_score": round(
-                    max(
-                        float(right.metadata_json.get("payoff_end_weight", 0.0) or 0.0),
-                        float(right.metadata_json.get("reaction_shift_score", 0.0) or 0.0),
-                        entity_overlap,
-                    ),
-                    3,
-                ),
+                "payoff_anchor": {
+                    "start_time": round(right.start_time, 3),
+                    "end_time": round(right.end_time, 3),
+                    "payoff_score": round(max(right_payoff_score, right_reaction_score_val), 3),
+                    "role": right_core_role,
+                },
             }
             scores = {
                 **(left.scores_json or {}),
@@ -332,8 +367,8 @@ def build_composite_candidates(
                 "entity_overlap": round(entity_overlap, 3),
                 "question_answer_match": round(question_answer_match, 3),
                 "reaction_shift_score": round(reaction_shift, 3),
+                "arc_continuity_score": arc_continuity_score,
             }
-            metadata["candidate_track"] = "dialogue"
             composites.append(
                 ScoredWindow(
                     start_time=round(left.start_time, 3),
