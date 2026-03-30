@@ -94,7 +94,7 @@ show_title          str
 season_number       int? (nullable)
 episode_number      int? (nullable)
 episode_title       str? (nullable)
-original_language   str (기본 "ko")
+original_language   str (기본 "en")
 target_channel      str (기본 "kr_us_drama")
 status              Enum: UPLOADED | PROCESSING | READY | FAILED
 source_video_path   str (원본 영상 경로)
@@ -561,15 +561,19 @@ for each seed_window as start_node:
 return top_N(best_chains, N=10)
 ```
 
-각 복합 후보의 `clip_spans`:
+각 복합 후보의 `clip_spans` (arc beam search 결과 예시):
 ```json
 [
-  {"start_time": 120.0, "end_time": 145.0, "order": 0, "role": "main"},
-  {"start_time": 200.0, "end_time": 220.0, "order": 1, "role": "support_post"}
+  {"start_time": 115.0, "end_time": 120.0, "order": 0, "role": "support_pre"},
+  {"start_time": 120.0, "end_time": 145.0, "order": 1, "role": "core_setup"},
+  {"start_time": 200.0, "end_time": 220.0, "order": 2, "role": "core_payoff"},
+  {"start_time": 220.0, "end_time": 224.0, "order": 3, "role": "support_post"}
 ]
 ```
 
-역할 분류: `main` | `support_pre` | `support_post` | `support_bridge`
+역할 분류 (`candidate_spans.py` 기준):
+- **CORE_ROLES:** `core_setup` | `core_escalation` | `core_payoff` | `core_reaction` | `core_dialogue` | `core_followup` | `main` | `setup` | `payoff` | `reaction` | `followup` | `dialogue`
+- **SUPPORT_ROLES:** `support_pre` | `support_post` | `support_bridge`
 
 ### 7.10 Vision 재랭크 (`vision_candidate_refinement.py`)
 

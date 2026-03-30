@@ -982,31 +982,30 @@ def llm_arc_judge(windows, *, top_k=5, provider="openai"):
 ### 8.3 TTS 렌더링 — ✅ 구현 완료
 
 ```python
-# backend/app/services/tts_service.py
+# backend/app/services/tts_service.py (실제 구현 기준)
 
-TTS_VOICES = {
-    "narrator_ko_female": {"provider": "openai", "voice": "nova",   "speed": 1.0},
-    "narrator_ko_male":   {"provider": "openai", "voice": "onyx",   "speed": 1.0},
-    "commentary_upbeat":  {"provider": "openai", "voice": "shimmer","speed": 1.1},
-    "narrator_en_male":   {"provider": "openai", "voice": "echo",   "speed": 1.05},
-}
-
-def generate_tts_audio(
-    text: str,
+def synthesize_short_tts(
     *,
-    voice_key: str = "narrator_ko_female",
+    text: str,
     output_path: Path,
-) -> Path:
-    config = TTS_VOICES.get(voice_key, TTS_VOICES["narrator_ko_female"])
-    client = OpenAI(api_key=settings.openai_api_key)
-    response = client.audio.speech.create(
-        model="tts-1",   # 또는 tts-1-hd (고품질)
-        voice=config["voice"],
-        input=text,
-        speed=config["speed"],
-    )
-    response.stream_to_file(output_path)
-    return output_path
+    voice_key: str | None,      # "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer"
+    duration_sec: float,
+) -> TTSResult:
+    """OpenAI gpt-4o-mini-tts 호출. API 키 없거나 실패 시 FFmpeg silence 폴백."""
+    if text and settings.openai_api_key:
+        response = httpx.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            json={"model": "gpt-4o-mini-tts", "voice": voice_key, "input": text, "format": "mp3"},
+            timeout=120.0,
+        )
+        response.raise_for_status()
+        output_path.write_bytes(response.content)
+        # duration_sec 기준으로 apad/atrim 정규화 후 반환
+        ...
+    else:
+        # silence 폴백: ffmpeg -f lavfi -i anullsrc -t {duration_sec} -c:a aac
+        _ffmpeg_silence(output_path.with_suffix(".m4a"), duration_sec)
 ```
 
 **비디오 템플릿 렌더러 기본 구현 (`video_template_renderer.py`):**
