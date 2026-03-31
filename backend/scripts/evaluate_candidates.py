@@ -527,6 +527,41 @@ def _db_feedback_summary(
             dist[val] = dist.get(val, 0) + 1
         return dist
 
+    # selected 후보의 원래 candidate_index(top-k 랭크) 분포
+    selected_original_rank_dist: dict[str, int] = {}
+    for c in selected_candidates:
+        rank_bucket = str(c.candidate_index)
+        selected_original_rank_dist[rank_bucket] = selected_original_rank_dist.get(rank_bucket, 0) + 1
+
+    # failure_tag별 평균 점수
+    tag_scores: dict[str, list[float]] = {}
+    for c in candidates:
+        for tag in (c.failure_tags or []):
+            tag_scores.setdefault(str(tag), []).append(float(c.total_score))
+    failure_tag_avg_score: dict[str, float] = {
+        tag: round(mean(scores), 3) for tag, scores in tag_scores.items()
+    }
+
+    # candidate_track × failure_tag 교차표
+    track_failure_cross: dict[str, dict[str, int]] = {}
+    for c in candidates:
+        meta = c.metadata_json if isinstance(c.metadata_json, dict) else {}
+        track = str(meta.get("candidate_track", "dialogue"))
+        for tag in (c.failure_tags or []):
+            bucket = track_failure_cross.setdefault(track, {})
+            bucket[str(tag)] = bucket.get(str(tag), 0) + 1
+
+    # window_reason × selected/rejected
+    def _reason_status_dist(
+        cands: list[Candidate],
+    ) -> dict[str, int]:
+        dist: dict[str, int] = {}
+        for c in cands:
+            meta = c.metadata_json if isinstance(c.metadata_json, dict) else {}
+            reason = str(meta.get("window_reason", "unknown"))
+            dist[reason] = dist.get(reason, 0) + 1
+        return dist
+
     summary: dict[str, int | float | dict[str, int | float]] = {
         "feedback_count": total_feedback_count,
         "feedback_action_distribution": action_dist,
@@ -536,10 +571,14 @@ def _db_feedback_summary(
         "selected_avg_score": round(mean(selected_scores), 3) if selected_scores else 0.0,
         "rejected_avg_score": round(mean(rejected_scores), 3) if rejected_scores else 0.0,
         "failure_tag_distribution": failure_tag_dist,
+        "failure_tag_avg_score": failure_tag_avg_score,
         "selected_track_distribution": _track_dist(selected_candidates),
         "rejected_track_distribution": _track_dist(rejected_candidates),
         "rejected_arc_form_distribution": _field_dist(rejected_candidates, "arc_form"),
         "rejected_window_reason_distribution": _field_dist(rejected_candidates, "window_reason"),
+        "selected_original_rank_distribution": selected_original_rank_dist,
+        "selected_window_reason_distribution": _reason_status_dist(selected_candidates),
+        "track_failure_cross": track_failure_cross,
     }
 
     # --- 에피소드별 집계 ---
@@ -605,6 +644,24 @@ def _print_feedback_report(feedback_data: dict[str, dict[str, int | float | dict
     action_dist = summary.get("feedback_action_distribution", {})
     if action_dist:
         print(f"  액션 분포: {action_dist}")
+
+    # 5순위: 품질 경향 추가 항목
+    rank_dist = summary.get("selected_original_rank_distribution", {})
+    if rank_dist:
+        print(f"  채택 원래 랭크 분포: {rank_dist}")
+    tag_avg = summary.get("failure_tag_avg_score", {})
+    if tag_avg:
+        print(f"  실패 유형별 평균 점수: {tag_avg}")
+    cross = summary.get("track_failure_cross", {})
+    if cross:
+        print("  트랙 × 실패 유형 교차:")
+        for track, tags in cross.items():
+            if isinstance(tags, dict):
+                print(f"    {track}: {tags}")
+    sel_reason = summary.get("selected_window_reason_distribution", {})
+    if sel_reason:
+        print(f"  채택 window_reason 분포: {sel_reason}")
+
     fail_dist = summary.get("failure_tag_distribution", {})
     if fail_dist:
         print(f"  실패 유형 분포: {fail_dist}")

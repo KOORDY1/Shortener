@@ -31,7 +31,38 @@ def _candidate_snapshot(candidate: Candidate) -> dict[str, str | bool | int | fl
     }
 
 
+def _reorder_episode_candidates(
+    db: Session,
+    candidate: Candidate,
+    new_rank: int,
+) -> None:
+    """같은 에피소드 내 후보들의 candidate_index를 일관되게 재정렬한다.
+
+    new_rank 위치에 candidate를 끼워넣고, 나머지 후보의 인덱스를 shift한다.
+    """
+    siblings = list(
+        db.scalars(
+            select(Candidate)
+            .where(Candidate.episode_id == candidate.episode_id)
+            .order_by(Candidate.candidate_index.asc())
+        )
+    )
+
+    # 목록에서 대상 후보 제거
+    others = [c for c in siblings if c.id != candidate.id]
+
+    # new_rank 위치(1-based)에 끼워넣기
+    insert_idx = max(0, min(new_rank - 1, len(others)))
+    others.insert(insert_idx, candidate)
+
+    # 전체 인덱스 1-based 재할당
+    for idx, c in enumerate(others):
+        c.candidate_index = idx + 1
+        db.add(c)
+
+
 def _apply_feedback_action(
+    db: Session,
     candidate: Candidate,
     action: str,
     request: CandidateFeedbackCreateRequest,
@@ -46,19 +77,21 @@ def _apply_feedback_action(
         candidate.status = CandidateStatus.REJECTED.value
 
     elif action == FeedbackAction.EDITED.value:
-        # 실제 trim 수정은 강제하지 않지만, metadata에 edited 표시 기록
         meta = dict(candidate.metadata_json or {})
         meta["edited"] = True
         candidate.metadata_json = meta
 
     elif action == FeedbackAction.REORDERED.value:
-        # request metadata에 new_rank가 있으면 candidate_index 업데이트
         new_rank = request.metadata.get("new_rank")
         if isinstance(new_rank, int) and 1 <= new_rank <= 14:
-            candidate.candidate_index = new_rank
+            _reorder_episode_candidates(db, candidate, new_rank)
         meta = dict(candidate.metadata_json or {})
         meta["reordered"] = True
         candidate.metadata_json = meta
+
+    # 2순위: feedback.failure_tags → Candidate.failure_tags 동기화 (overwrite + dedupe)
+    if request.failure_tags:
+        candidate.failure_tags = list(dict.fromkeys(request.failure_tags))
 
 
 @router.put("/candidates/{candidate_id}/failure-tags", response_model=FailureTagResponse)
@@ -113,8 +146,8 @@ def create_feedback(
     # before snapshot
     before_snapshot = _candidate_snapshot(candidate)
 
-    # action에 따라 Candidate 상태 변경
-    _apply_feedback_action(candidate, request.action, request)
+    # action에 따라 Candidate 상태 변경 + failure_tags 동기화
+    _apply_feedback_action(db, candidate, request.action, request)
     db.add(candidate)
 
     # after snapshot (상태 변경 이후)

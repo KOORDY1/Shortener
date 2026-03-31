@@ -92,6 +92,12 @@ export type Shot = {
   thumbnail_path?: string | null;
 };
 
+export type CandidateFeedbackSummary = {
+  feedback_count: number;
+  latest_feedback_action?: string | null;
+  latest_feedback_at?: string | null;
+};
+
 export type CandidateDetail = {
   id: string;
   episode_id: string;
@@ -114,6 +120,9 @@ export type CandidateDetail = {
   composite?: boolean;
   primary_span_index?: number;
   clip_spans?: ClipSpan[];
+  selected: boolean;
+  failure_tags: FailureType[];
+  feedback_summary: CandidateFeedbackSummary;
 };
 
 export type ShortClipSubtitleStyle = {

@@ -250,6 +250,14 @@ class CandidateListResponse(BaseModel):
     total: int
 
 
+class CandidateFeedbackSummary(BaseModel):
+    """Candidate 상세 응답에 포함되는 피드백 요약."""
+
+    feedback_count: int = 0
+    latest_feedback_action: str | None = None
+    latest_feedback_at: datetime | None = None
+
+
 class CandidateDetailResponse(BaseModel):
     id: str
     episode_id: str
@@ -272,6 +280,10 @@ class CandidateDetailResponse(BaseModel):
     composite: bool = False
     primary_span_index: int = 0
     clip_spans: list[dict[str, Any]] = Field(default_factory=list)
+    # 3순위: 직접 노출 필드
+    selected: bool = False
+    failure_tags: list[str] = Field(default_factory=list)
+    feedback_summary: CandidateFeedbackSummary = Field(default_factory=CandidateFeedbackSummary)
 
     @classmethod
     def from_model(
@@ -279,6 +291,7 @@ class CandidateDetailResponse(BaseModel):
         candidate: Candidate,
         segments: list[TranscriptSegment],
         shots: list[Shot],
+        feedback_summary: CandidateFeedbackSummary | None = None,
     ) -> "CandidateDetailResponse":
         meta = candidate.metadata_json or {}
         editor_meta = meta.get("render_editor") or {}
@@ -305,6 +318,9 @@ class CandidateDetailResponse(BaseModel):
             composite=bool(meta.get("composite")),
             primary_span_index=int(meta.get("primary_span_index") or 0),
             clip_spans=clip_spans,
+            selected=candidate.selected,
+            failure_tags=list(candidate.failure_tags or []),
+            feedback_summary=feedback_summary or CandidateFeedbackSummary(),
         )
 
 

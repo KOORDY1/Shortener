@@ -15,7 +15,6 @@ import { formatDuration, formatPreciseTimecode, formatTimecode } from "@/lib/for
 import { scoreKeyLabel } from "@/lib/labels";
 import type {
   CandidateDetail,
-  FailureType,
   Job,
   ScriptDraft,
   ShortClipRenderConfig,
@@ -28,7 +27,6 @@ type Props = {
   drafts: ScriptDraft[];
   jobs: Job[];
   videoDrafts: VideoDraftSummary[];
-  initialFailureTags?: FailureType[];
 };
 
 export function CandidateDetailContent({
@@ -36,8 +34,7 @@ export function CandidateDetailContent({
   candidate,
   drafts,
   jobs,
-  videoDrafts,
-  initialFailureTags = []
+  videoDrafts
 }: Props) {
   const generatedBy =
     typeof candidate.metadata.generated_by === "string"
@@ -228,9 +225,9 @@ export function CandidateDetailContent({
 
       <CandidateFeedbackPanel
         candidateId={candidateId}
-        initialFailureTags={initialFailureTags}
+        initialFailureTags={candidate.failure_tags}
         candidateStatus={candidate.status}
-        candidateSelected={candidate.status === "selected"}
+        candidateSelected={candidate.selected}
       />
 
       <DebugDisclosure title="기술 정보 펼치기">

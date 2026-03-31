@@ -5,13 +5,13 @@
 
 ---
 
-> **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료
+> **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료 ✅
 >
-> ~~**운영자 피드백 루프를 “기록용”에서 “실제 상태 변경 + 평가/분석 반영” 단계로 올리는 후속 구현**~~ ✅
->
-> 1. ~~**feedback action이 Candidate 상태를 실제로 바꾸게 만들기**~~ ✅ — `_apply_feedback_action()`이 selected/rejected/edited/reordered 액션별 Candidate 상태 변경, `before_snapshot`+`after_snapshot` 완전 기록
-> 2. ~~**피드백 데이터가 평가 스크립트와 운영 리포트에 반영되게 만들기**~~ ✅ — `--include-db-feedback` 옵션, 에피소드별/전체 집계 (action분포, failure_tag분포, track별 rejection 편향, arc_form/window_reason별 편향, selected/rejected 평균점수)
-> 3. ~~**피드백 UI를 운영용으로 조금 더 실용적으로 만들기**~~ ✅ — 자동 피드백 로드, 성공/실패 표시, 액션별 설명 표시, 후보 상태 실시간 반영, 상태 전이(before→after) 표시, 색상 구분 이력
+> 1. ~~**reordered 진짜 순위 재정렬**~~ ✅ — `_reorder_episode_candidates()`: 같은 episode 후보를 한 트랜잭션에서 끼워넣기+shift, 인덱스 1~N 유일 보장, before/after snapshot 반영
+> 2. ~~**feedback → Candidate.failure_tags 동기화**~~ ✅ — `_apply_feedback_action()`에서 request.failure_tags 존재 시 overwrite+dedupe로 Candidate.failure_tags 자동 동기화
+> 3. ~~**Candidate 상세 응답에 피드백 요약 직접 노출**~~ ✅ — `CandidateDetailResponse`에 `selected`, `failure_tags`, `feedback_summary`(feedback_count, latest_feedback_action, latest_feedback_at) 추가. 프론트 `CandidateDetail` 타입도 반영, 별도 getFailureTags 호출 제거
+> 4. ~~**feedback 상태 전이 회귀 테스트**~~ ✅ — `tests/test_candidate_feedback.py` 12개 테스트: selected/rejected 상태변경, failure_tags 동기화, snapshot 완전성, validation, reorder 전체 순위 보존, 피드백 목록, 상세 응답 feedback_summary
+> 5. ~~**evaluate 리포트 품질 경향 확장**~~ ✅ — selected 원래 랭크 분포, failure_tag별 평균 점수, candidate_track × failure_tag 교차표, window_reason × selected/rejected 분포
 
 ---
 

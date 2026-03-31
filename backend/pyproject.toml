@@ -20,6 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "ruff>=0.15.7",
+  "pytest>=8.0.0",
+  "httpx>=0.28.0",
 ]
 
 [build-system]
