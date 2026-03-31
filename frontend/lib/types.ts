@@ -284,15 +284,23 @@ export const FEEDBACK_ACTION_LABELS: Record<FeedbackAction, string> = {
   reordered: "순위 변경",
 };
 
+export type CandidateFeedbackSnapshot = {
+  status: string;
+  selected: boolean;
+  candidate_index: number;
+  total_score: number;
+  failure_tags: FailureType[];
+};
+
 export type CandidateFeedback = {
   id: string;
   candidate_id: string;
   action: FeedbackAction;
   reason?: string | null;
   failure_tags: FailureType[];
-  before_snapshot: Record<string, unknown>;
-  after_snapshot: Record<string, unknown>;
-  metadata: Record<string, unknown>;
+  before_snapshot: CandidateFeedbackSnapshot;
+  after_snapshot: CandidateFeedbackSnapshot;
+  metadata: Record<string, string | number | boolean | null>;
   created_at?: string | null;
 };
 

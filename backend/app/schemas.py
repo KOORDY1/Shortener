@@ -574,28 +574,53 @@ class CandidateFeedbackCreateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CandidateFeedbackSnapshotField(BaseModel):
+    status: str = ""
+    selected: bool = False
+    candidate_index: int = 0
+    total_score: float = 0.0
+    failure_tags: list[str] = Field(default_factory=list)
+
+
 class CandidateFeedbackResponse(BaseModel):
     id: str
     candidate_id: str
     action: str
     reason: str | None
     failure_tags: list[str]
-    before_snapshot: dict[str, Any]
-    after_snapshot: dict[str, Any]
-    metadata: dict[str, Any]
+    before_snapshot: CandidateFeedbackSnapshotField
+    after_snapshot: CandidateFeedbackSnapshotField
+    metadata: dict[str, str | int | float | bool | None]
     created_at: datetime | None
 
     @classmethod
     def from_model(cls, fb: CandidateFeedback) -> "CandidateFeedbackResponse":
+        def _parse_snapshot(raw: dict[str, str | int | float | bool | list[str]] | None) -> CandidateFeedbackSnapshotField:
+            if not raw:
+                return CandidateFeedbackSnapshotField()
+            return CandidateFeedbackSnapshotField(
+                status=str(raw.get("status", "")),
+                selected=bool(raw.get("selected", False)),
+                candidate_index=int(raw.get("candidate_index", 0)),
+                total_score=float(raw.get("total_score", 0.0)),
+                failure_tags=list(raw.get("failure_tags") or []),
+            )
+
+        raw_meta = fb.metadata_json or {}
+        safe_meta: dict[str, str | int | float | bool | None] = {
+            k: v for k, v in raw_meta.items()
+            if isinstance(v, (str, int, float, bool, type(None)))
+        }
+
         return cls(
             id=fb.id,
             candidate_id=fb.candidate_id,
             action=fb.action,
             reason=fb.reason,
             failure_tags=fb.failure_tags or [],
-            before_snapshot=fb.before_snapshot or {},
-            after_snapshot=fb.after_snapshot or {},
-            metadata=fb.metadata_json or {},
+            before_snapshot=_parse_snapshot(fb.before_snapshot),
+            after_snapshot=_parse_snapshot(fb.after_snapshot),
+            metadata=safe_meta,
             created_at=fb.created_at,
         )
 

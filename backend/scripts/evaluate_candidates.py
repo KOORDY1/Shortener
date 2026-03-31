@@ -69,7 +69,7 @@ os.environ.setdefault("OPENAI_API_KEY", "")
 from sqlalchemy import create_engine, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
-from app.db.models import Candidate, Episode  # noqa: E402
+from app.db.models import Candidate, CandidateFeedback, Episode  # noqa: E402
 
 # §6.1 실패 유형 분류 체계
 FAILURE_TYPES: list[str] = [
@@ -453,6 +453,182 @@ def _export_candidates(
     print(f"후보 내보내기 완료: {output_path} ({len(episode_ids)}개 에피소드)")
 
 
+def _db_feedback_summary(
+    db: Session,
+    episode_ids: list[str] | None = None,
+) -> dict[str, dict[str, int | float | dict[str, int | float]]]:
+    """DB에 저장된 운영 피드백을 집계한다.
+
+    Returns:
+        {
+            "db_feedback_summary": { ... 전체 집계 ... },
+            "db_feedback_by_episode": { ep_id: { ... } }
+        }
+    """
+    # 대상 에피소드 결정
+    if episode_ids:
+        candidate_filter = Candidate.episode_id.in_(episode_ids)
+    else:
+        candidate_filter = True  # noqa: E712 — 전체
+
+    candidates = list(
+        db.scalars(
+            select(Candidate).where(candidate_filter)  # type: ignore[arg-type]
+        )
+    )
+    if not candidates:
+        return {"db_feedback_summary": {}, "db_feedback_by_episode": {}}
+
+    cand_by_id: dict[str, Candidate] = {c.id: c for c in candidates}
+    cand_ids = list(cand_by_id.keys())
+
+    feedbacks = list(
+        db.scalars(
+            select(CandidateFeedback)
+            .where(CandidateFeedback.candidate_id.in_(cand_ids))
+            .order_by(CandidateFeedback.created_at.asc())
+        )
+    )
+
+    # --- 전체 집계 ---
+    total_feedback_count = len(feedbacks)
+    action_dist: dict[str, int] = {}
+    for fb in feedbacks:
+        action_dist[fb.action] = action_dist.get(fb.action, 0) + 1
+
+    # 후보 수준 집계
+    selected_candidates = [c for c in candidates if c.selected]
+    rejected_candidates = [c for c in candidates if c.status == "rejected"]
+
+    selected_scores = [float(c.total_score) for c in selected_candidates]
+    rejected_scores = [float(c.total_score) for c in rejected_candidates]
+
+    # failure_tags 분포 (후보의 현재 failure_tags 기반)
+    failure_tag_dist: dict[str, int] = {}
+    for c in candidates:
+        for tag in (c.failure_tags or []):
+            failure_tag_dist[str(tag)] = failure_tag_dist.get(str(tag), 0) + 1
+
+    # 트랙별 selected/rejected 분포
+    def _track_dist(cands: list[Candidate]) -> dict[str, int]:
+        dist: dict[str, int] = {}
+        for c in cands:
+            meta = c.metadata_json if isinstance(c.metadata_json, dict) else {}
+            track = str(meta.get("candidate_track", "dialogue"))
+            dist[track] = dist.get(track, 0) + 1
+        return dist
+
+    # arc_form별 rejection 분포
+    def _field_dist(cands: list[Candidate], field: str) -> dict[str, int]:
+        dist: dict[str, int] = {}
+        for c in cands:
+            meta = c.metadata_json if isinstance(c.metadata_json, dict) else {}
+            val = str(meta.get(field, "unknown"))
+            dist[val] = dist.get(val, 0) + 1
+        return dist
+
+    summary: dict[str, int | float | dict[str, int | float]] = {
+        "feedback_count": total_feedback_count,
+        "feedback_action_distribution": action_dist,
+        "candidate_count": len(candidates),
+        "selected_count": len(selected_candidates),
+        "rejected_count": len(rejected_candidates),
+        "selected_avg_score": round(mean(selected_scores), 3) if selected_scores else 0.0,
+        "rejected_avg_score": round(mean(rejected_scores), 3) if rejected_scores else 0.0,
+        "failure_tag_distribution": failure_tag_dist,
+        "selected_track_distribution": _track_dist(selected_candidates),
+        "rejected_track_distribution": _track_dist(rejected_candidates),
+        "rejected_arc_form_distribution": _field_dist(rejected_candidates, "arc_form"),
+        "rejected_window_reason_distribution": _field_dist(rejected_candidates, "window_reason"),
+    }
+
+    # --- 에피소드별 집계 ---
+    by_episode: dict[str, dict[str, int | float | dict[str, int]]] = {}
+    ep_cands: dict[str, list[Candidate]] = {}
+    for c in candidates:
+        ep_cands.setdefault(c.episode_id, []).append(c)
+
+    ep_feedbacks: dict[str, list[CandidateFeedback]] = {}
+    for fb in feedbacks:
+        cand = cand_by_id.get(fb.candidate_id)
+        if cand:
+            ep_feedbacks.setdefault(cand.episode_id, []).append(fb)
+
+    for ep_id, ep_candidates in ep_cands.items():
+        ep_fb = ep_feedbacks.get(ep_id, [])
+        ep_selected = [c for c in ep_candidates if c.selected]
+        ep_rejected = [c for c in ep_candidates if c.status == "rejected"]
+        ep_sel_scores = [float(c.total_score) for c in ep_selected]
+        ep_rej_scores = [float(c.total_score) for c in ep_rejected]
+
+        ep_action_dist: dict[str, int] = {}
+        for fb in ep_fb:
+            ep_action_dist[fb.action] = ep_action_dist.get(fb.action, 0) + 1
+
+        ep_failure_dist: dict[str, int] = {}
+        for c in ep_candidates:
+            for tag in (c.failure_tags or []):
+                ep_failure_dist[str(tag)] = ep_failure_dist.get(str(tag), 0) + 1
+
+        by_episode[ep_id] = {
+            "candidate_count": len(ep_candidates),
+            "selected_candidate_count": len(ep_selected),
+            "rejected_candidate_count": len(ep_rejected),
+            "feedback_count": len(ep_fb),
+            "feedback_action_distribution": ep_action_dist,
+            "candidate_failure_tag_distribution": ep_failure_dist,
+            "selected_avg_score": round(mean(ep_sel_scores), 3) if ep_sel_scores else 0.0,
+            "rejected_avg_score": round(mean(ep_rej_scores), 3) if ep_rej_scores else 0.0,
+            "selected_track_distribution": _track_dist(ep_selected),
+            "rejected_track_distribution": _track_dist(ep_rejected),
+        }
+
+    return {
+        "db_feedback_summary": summary,
+        "db_feedback_by_episode": by_episode,
+    }
+
+
+def _print_feedback_report(feedback_data: dict[str, dict[str, int | float | dict[str, int | float]]]) -> None:
+    summary = feedback_data.get("db_feedback_summary", {})
+    if not summary:
+        print("  (DB 피드백 데이터 없음)")
+        return
+
+    print("\n=== DB 운영 피드백 집계 ===\n")
+    print(f"  총 피드백 수: {summary.get('feedback_count', 0)}")
+    print(f"  후보 수: {summary.get('candidate_count', 0)}")
+    print(f"  채택: {summary.get('selected_count', 0)}, 탈락: {summary.get('rejected_count', 0)}")
+    print(f"  채택 평균 점수: {summary.get('selected_avg_score', 0):.2f}")
+    print(f"  탈락 평균 점수: {summary.get('rejected_avg_score', 0):.2f}")
+
+    action_dist = summary.get("feedback_action_distribution", {})
+    if action_dist:
+        print(f"  액션 분포: {action_dist}")
+    fail_dist = summary.get("failure_tag_distribution", {})
+    if fail_dist:
+        print(f"  실패 유형 분포: {fail_dist}")
+    rej_track = summary.get("rejected_track_distribution", {})
+    if rej_track:
+        print(f"  탈락 트랙 분포: {rej_track}")
+    rej_arc = summary.get("rejected_arc_form_distribution", {})
+    if rej_arc:
+        print(f"  탈락 arc_form 분포: {rej_arc}")
+    rej_reason = summary.get("rejected_window_reason_distribution", {})
+    if rej_reason:
+        print(f"  탈락 window_reason 분포: {rej_reason}")
+
+    by_ep = feedback_data.get("db_feedback_by_episode", {})
+    if by_ep:
+        print(f"\n  에피소드별 ({len(by_ep)}개):")
+        for ep_id, ep_stats in by_ep.items():
+            sel = ep_stats.get("selected_candidate_count", 0)
+            rej = ep_stats.get("rejected_candidate_count", 0)
+            fb_ct = ep_stats.get("feedback_count", 0)
+            print(f"    {ep_id[:12]}… — 채택 {sel}, 탈락 {rej}, 피드백 {fb_ct}건")
+    print()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="후보 품질 오프라인 평가")
     parser.add_argument("--golden", type=Path, default=None, help="golden_candidates.json 경로")
@@ -461,6 +637,12 @@ def main() -> None:
     parser.add_argument("--top-k", nargs="*", type=int, default=[5, 10, 14], help="Recall@K 값들")
     parser.add_argument("--iou-threshold", type=float, default=0.3, help="IOU 매칭 임계값 (기본 0.3)")
     parser.add_argument("--output", type=Path, default=None, help="JSON 결과 저장 경로")
+    parser.add_argument(
+        "--include-db-feedback",
+        action="store_true",
+        default=False,
+        help="DB에 저장된 운영 피드백 집계를 함께 출력",
+    )
     parser.add_argument(
         "--create-golden-template",
         type=Path,
@@ -500,6 +682,20 @@ def main() -> None:
             _create_golden_template(ep_ids, args.create_golden_template)
         return
 
+    # --include-db-feedback만 사용 시 golden 없어도 동작
+    if args.include_db_feedback and not args.golden:
+        if not database_url:
+            parser.error("--db 또는 DATABASE_URL 환경변수를 설정해 주세요.")
+        engine = create_engine(database_url)
+        with Session(engine) as db:
+            feedback_data = _db_feedback_summary(db, episode_ids=args.episode_ids)
+        _print_feedback_report(feedback_data)
+        if args.output:
+            with args.output.open("w", encoding="utf-8") as f:
+                json.dump(feedback_data, f, ensure_ascii=False, indent=2)
+            print(f"결과 저장됨: {args.output}")
+        return
+
     if not args.golden or not args.golden.is_file():
         parser.error("--golden 인자로 golden_candidates.json 경로를 지정해 주세요.")
 
@@ -517,12 +713,20 @@ def main() -> None:
             top_ks=tuple(args.top_k),
             iou_threshold=args.iou_threshold,
         )
+        feedback_data: dict[str, dict[str, int | float | dict[str, int | float]]] = {}
+        if args.include_db_feedback:
+            feedback_data = _db_feedback_summary(db, episode_ids=args.episode_ids)
 
     _print_report(results)
+    if feedback_data:
+        _print_feedback_report(feedback_data)
 
     if args.output:
+        output_data: dict[str, dict[str, int | float | dict[str, int | float]] | dict[str, dict[str, float | str | bool | int | list[dict[str, str | float | bool]]]]] = {**results}
+        if feedback_data:
+            output_data.update(feedback_data)
         with args.output.open("w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+            json.dump(output_data, f, ensure_ascii=False, indent=2)
         print(f"결과 저장됨: {args.output}")
 
 

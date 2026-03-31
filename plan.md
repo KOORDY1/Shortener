@@ -7,12 +7,140 @@
 
 > **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료
 >
-> 1. ~~**오프라인 평가셋 정교화**~~ ✅ — golden set v2 스키마(quality/failure_types), Recall@K 매칭 상세, DB 후보 export/seed, 실패 유형 분포 집계
-> 2. ~~**실패 유형 분류 체계 정립**~~ ✅ — `FailureType` enum 7종, `Candidate.failure_tags` DB 컬럼, PUT/GET API, 프론트엔드 태깅 UI
-> 3. ~~**후보 다양성 강화**~~ ✅ — `_diversity_penalty()` + diversity-aware greedy selection (entity Jaccard, window_reason, ranking_focus 중복 패널티)
-> 4. ~~**길이 정책 재검토**~~ ✅ — `LengthPolicy` dataclass (search window / core span / render target 3계층), `config.py` 환경변수 연동, 전 서비스 일괄 적용
-> 5. ~~**운영자 피드백 로그 스키마 도입**~~ ✅ — `CandidateFeedback` DB 모델 + 마이그레이션 `0005`, POST/GET API, 프론트엔드 피드백 패널
+> ~~**운영자 피드백 루프를 “기록용”에서 “실제 상태 변경 + 평가/분석 반영” 단계로 올리는 후속 구현**~~ ✅
+>
+> 1. ~~**feedback action이 Candidate 상태를 실제로 바꾸게 만들기**~~ ✅ — `_apply_feedback_action()`이 selected/rejected/edited/reordered 액션별 Candidate 상태 변경, `before_snapshot`+`after_snapshot` 완전 기록
+> 2. ~~**피드백 데이터가 평가 스크립트와 운영 리포트에 반영되게 만들기**~~ ✅ — `--include-db-feedback` 옵션, 에피소드별/전체 집계 (action분포, failure_tag분포, track별 rejection 편향, arc_form/window_reason별 편향, selected/rejected 평균점수)
+> 3. ~~**피드백 UI를 운영용으로 조금 더 실용적으로 만들기**~~ ✅ — 자동 피드백 로드, 성공/실패 표시, 액션별 설명 표시, 후보 상태 실시간 반영, 상태 전이(before→after) 표시, 색상 구분 이력
 
+---
+
+## 현재 문제 인식
+
+현재 구현은 다음이 가능하다:
+- 후보별 `failure_tags` 저장
+- `CandidateFeedback`에 action / reason / failure_tags / before_snapshot / metadata 저장
+- 프론트에서 failure tag 토글과 feedback 기록
+- `evaluate_candidates.py`에서 golden set의 failure type / quality 분포 평가
+
+~~아래 항목들은 모두 해결됨:~~ ✅
+- ✅ `selected/rejected/edited/reordered` action이 실제 `Candidate.selected`, `Candidate.status`, `candidate_index` 등에 일관되게 반영됨 — `_apply_feedback_action()`
+- ✅ `after_snapshot`이 완전히 채워짐 — `_candidate_snapshot()`으로 status/selected/candidate_index/total_score/failure_tags 기록
+- ✅ `evaluate_candidates.py --include-db-feedback`으로 DB 피드백 기반 집계 지원 — 에피소드별/전체 집계, action/failure_tag/track/arc_form/window_reason 분포
+- ✅ 프론트 피드백 패널 개선 — 자동 로드, 성공/실패 표시, 액션별 설명, 상태 실시간 반영, before→after 전이 표시
+
+---
+
+## 1단계: feedback action → Candidate 상태 변경 연결 ✅
+수정 대상:
+- `backend/app/api/v1/candidate_feedback.py`
+- `backend/app/db/models.py`
+- `backend/app/schemas.py`
+- 필요 시 `backend/app/api/v1/candidates.py`
+
+구현 요구사항:
+- `create_feedback()`가 단순 로그 생성만 하지 말고, `request.action`에 따라 `Candidate` 상태도 실제로 업데이트하게 해줘.
+
+### 액션별 권장 동작
+#### action = `selected`
+- `candidate.selected = True`
+- `candidate.status = "selected"` 또는 기존 enum/상태 체계에 맞는 값으로 반영
+- 가능하면 같은 episode 내 다른 후보의 `selected` 처리 정책도 결정
+  - 기본 권장: 일단 자동 해제는 하지 말고, 여러 후보 selected 허용
+  - 대신 metadata나 응답에 현재 selected 후보 수를 보여줘도 좋다
+
+#### action = `rejected`
+- `candidate.selected = False`
+- `candidate.status = "rejected"`
+
+#### action = `edited`
+- 이번 단계에서 실제 trim 수정까지 강제할 필요는 없음
+- 다만 `after_snapshot`에는 현재 candidate 상태를 기록
+- `metadata_json` 또는 feedback metadata에 “edited intent”가 보이게 유지
+
+#### action = `reordered`
+- 이번 단계에서 실제 전체 순위 재정렬 UI가 없다면,
+  - 최소한 `metadata_json["reordered"] = true` 같은 흔적
+  - 또는 `reason`/`metadata`를 통해 향후 수동 재정렬 근거를 남겨라
+- 가능하면 request metadata에 `new_rank`가 들어왔을 때 `candidate_index` 업데이트를 지원해도 좋다
+
+### before/after snapshot
+- `before_snapshot`은 지금처럼 저장
+- `after_snapshot`도 실제 업데이트 후 값으로 채워라
+- 최소 포함 필드:
+  - `status`
+  - `selected`
+  - `candidate_index`
+  - `total_score`
+  - `failure_tags`
+
+### 응답
+- `CandidateFeedbackResponse`에 필요하면 `candidate_status`, `candidate_selected`, `candidate_index` 같은 현재 상태를 추가 검토
+- 또는 feedback 생성 후 candidate 최신 상태를 함께 조회하는 별도 프론트 호출을 쉽게 하도록 구조 유지
+
+완료 기준: ✅ 모두 달성
+- ✅ feedback action이 실제 Candidate 상태 변화로 이어진다 — `_apply_feedback_action()`
+- ✅ `after_snapshot`이 비어 있지 않다 — `_candidate_snapshot()` 사용
+- ✅ 피드백 로그만 남는 구조에서 벗어난다 — selected/rejected/edited/reordered 각각 상태 변경
+
+---
+
+## 2단계: failure_tags / feedback를 평가·분석 루프에 반영 ✅
+수정 대상:
+- `backend/scripts/evaluate_candidates.py`
+- 필요 시 `backend/app/api/v1/candidates.py`
+- 필요 시 `backend/app/schemas.py`
+
+구현 요구사항:
+- `evaluate_candidates.py`가 golden set 기반 평가뿐 아니라, **DB에 실제 저장된 운영 피드백**도 함께 참고할 수 있게 확장해줘.
+- 당장 복잡한 ML 학습은 하지 말고, 운영 리포트 수준의 집계부터 해라.
+
+### 추가하면 좋은 리포트 항목
+에피소드별:
+- `selected_candidate_count`
+- `rejected_candidate_count`
+- `feedback_count`
+- `feedback_action_distribution`
+- `candidate_failure_tag_distribution`
+- `selected_track_distribution`
+- `rejected_track_distribution`
+- `selected_avg_score`
+- `rejected_avg_score`
+
+전체 집계:
+- 가장 자주 붙는 `failure_tags`
+- `candidate_track`별 rejection 편향
+- `arc_form`별 rejection 편향
+- `window_reason`별 rejection 편향
+- `selected`된 후보의 평균 `total_score` vs `rejected`된 후보의 평균 `total_score`
+
+### 권장 방식
+- golden set 평가는 그대로 유지
+- 새 옵션 예:
+  - `--include-db-feedback`
+  - `--episode-ids ...`
+- DB feedback가 있으면 결과 JSON에 아래 블록을 추가
+  - `db_feedback_summary`
+  - `db_feedback_by_episode`
+
+### 최소 리포트 예
+```json
+{
+  "db_feedback_summary": {
+    "feedback_count": 42,
+    "selected_count": 8,
+    "rejected_count": 21,
+    "failure_tag_distribution": {
+      "context_missing": 9,
+      "no_payoff": 7
+    },
+    "rejected_track_distribution": {
+      "dialogue": 12,
+      "visual": 5,
+      "audio": 4
+    }
+  }
+}
 ---
 
 ## 목차

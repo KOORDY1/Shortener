@@ -229,6 +229,8 @@ export function CandidateDetailContent({
       <CandidateFeedbackPanel
         candidateId={candidateId}
         initialFailureTags={initialFailureTags}
+        candidateStatus={candidate.status}
+        candidateSelected={candidate.status === "selected"}
       />
 
       <DebugDisclosure title="기술 정보 펼치기">

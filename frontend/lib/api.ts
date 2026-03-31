@@ -1,5 +1,6 @@
 import {
   CandidateDetail,
+  CandidateFeedback,
   CandidateFeedbackListResponse,
   CandidateListResponse,
   Episode,
@@ -232,9 +233,9 @@ export async function createCandidateFeedback(
     action: FeedbackAction;
     reason?: string;
     failure_tags?: FailureType[];
-    metadata?: Record<string, unknown>;
+    metadata?: Record<string, string | number | boolean | null>;
   }
-): Promise<void> {
+): Promise<CandidateFeedback> {
   const response = await fetch(`${apiBaseUrl}/candidates/${candidateId}/feedbacks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -247,6 +248,7 @@ export async function createCandidateFeedback(
       `API request failed: ${response.status} ${response.statusText}`
     );
   }
+  return (await response.json()) as CandidateFeedback;
 }
 
 export { apiBaseUrl };
