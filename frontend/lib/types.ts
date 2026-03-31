@@ -236,3 +236,67 @@ export type ExportDetail = {
   file_size_bytes?: number | null;
   metadata: Record<string, unknown>;
 };
+
+// --- 실패 유형 분류 체계 ---
+
+export const FAILURE_TYPES = [
+  "context_missing",
+  "no_payoff",
+  "duplicate_similar",
+  "too_long",
+  "weak_narrative",
+  "weak_structure",
+  "composite_overconnect",
+] as const;
+
+export type FailureType = (typeof FAILURE_TYPES)[number];
+
+export const FAILURE_TYPE_LABELS: Record<FailureType, string> = {
+  context_missing: "맥락 결여",
+  no_payoff: "payoff 없음",
+  duplicate_similar: "유사 중복",
+  too_long: "지나치게 긴 후보",
+  weak_narrative: "서사 약함",
+  weak_structure: "구조 약함",
+  composite_overconnect: "복합 과연결",
+};
+
+export type FailureTagResponse = {
+  id: string;
+  failure_tags: FailureType[];
+};
+
+// --- 운영자 피드백 로그 ---
+
+export const FEEDBACK_ACTIONS = [
+  "selected",
+  "rejected",
+  "edited",
+  "reordered",
+] as const;
+
+export type FeedbackAction = (typeof FEEDBACK_ACTIONS)[number];
+
+export const FEEDBACK_ACTION_LABELS: Record<FeedbackAction, string> = {
+  selected: "채택",
+  rejected: "탈락",
+  edited: "수정",
+  reordered: "순위 변경",
+};
+
+export type CandidateFeedback = {
+  id: string;
+  candidate_id: string;
+  action: FeedbackAction;
+  reason?: string | null;
+  failure_tags: FailureType[];
+  before_snapshot: Record<string, unknown>;
+  after_snapshot: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at?: string | null;
+};
+
+export type CandidateFeedbackListResponse = {
+  items: CandidateFeedback[];
+  total: number;
+};

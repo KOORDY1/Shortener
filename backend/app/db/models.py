@@ -45,6 +45,27 @@ class CandidateStatus(str, Enum):
     DRAFTED = "drafted"
 
 
+class FailureType(str, Enum):
+    """§6.1 실패 유형 분류 체계."""
+
+    CONTEXT_MISSING = "context_missing"            # 맥락 결여 — 독립 시청 불가
+    NO_PAYOFF = "no_payoff"                        # payoff 없이 끊김
+    DUPLICATE_SIMILAR = "duplicate_similar"         # 유사 후보 중복 상위 노출
+    TOO_LONG = "too_long"                          # 지나치게 긴 후보
+    WEAK_NARRATIVE = "weak_narrative"               # 시각적으로는 강하지만 서사 약함
+    WEAK_STRUCTURE = "weak_structure"               # 쇼츠 구조 약함 (hookability 낮음)
+    COMPOSITE_OVERCONNECT = "composite_overconnect" # 복합 후보 과연결
+
+
+class FeedbackAction(str, Enum):
+    """운영자 피드백 액션."""
+
+    SELECTED = "selected"   # 후보 채택
+    REJECTED = "rejected"   # 후보 탈락
+    EDITED = "edited"       # 후보 수정 (트림 등)
+    REORDERED = "reordered" # 순위 변경
+
+
 class VideoDraftStatus(str, Enum):
     CREATED = "created"
     QUEUED = "queued"
@@ -178,6 +199,7 @@ class Candidate(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
     short_clip_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     episode: Mapped[Episode] = relationship(back_populates="candidates")
@@ -187,6 +209,10 @@ class Candidate(Base):
     )
     jobs: Mapped[list[Job]] = relationship(back_populates="candidate")
     video_drafts: Mapped[list["VideoDraft"]] = relationship(
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+    )
+    feedbacks: Mapped[list["CandidateFeedback"]] = relationship(
         back_populates="candidate",
         cascade="all, delete-orphan",
     )
@@ -274,3 +300,21 @@ class Export(Base):
     )
 
     video_draft: Mapped[VideoDraft] = relationship(back_populates="exports")
+
+
+class CandidateFeedback(Base):
+    """운영자 피드백 로그 — 선택/탈락/수정 이력을 기록한다."""
+
+    __tablename__ = "candidate_feedbacks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"))
+    action: Mapped[str] = mapped_column(String(32))  # FeedbackAction value
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    before_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    after_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    candidate: Mapped[Candidate] = relationship(back_populates="feedbacks")

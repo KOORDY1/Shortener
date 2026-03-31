@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     # 스코어링 프로파일 (A/B 테스트용)
     scoring_profile: str = "default"  # "default" | "reaction_heavy" | "payoff_heavy"
 
+    # 길이 정책 (search window / core span / render target)
+    length_min_window_sec: float = 30.0
+    length_max_window_sec: float = 180.0
+    length_max_2span_sec: float = 64.0
+    length_max_3span_sec: float = 90.0
+    length_render_target_min_sec: float = 30.0
+    length_render_target_max_sec: float = 75.0
+    length_render_ideal_sec: float = 50.0
+
     storage_root: str = str(DEFAULT_STORAGE_DIR)
     # 브라우저에서 Next.js(dev)가 별도 포트로 API를 호출할 때 필요. 콤마로 구분.
     cors_allowed_origins: str = (

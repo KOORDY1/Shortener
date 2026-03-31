@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import replace
 
-from app.services.candidate_generation import ScoredWindow
+from app.services.candidate_generation import LengthPolicy, ScoredWindow
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,9 @@ _ARC_JUDGE_SYSTEM_PROMPT = """\
 - 패널티: 맥락 의존적 + 결론 없이 끊김 + 너무 길거나 너무 짧음
 """
 
-LENGTH_FIT_IDEAL_MIN = 30.0
-LENGTH_FIT_IDEAL_MAX = 75.0
+_LP = LengthPolicy.from_settings()
+LENGTH_FIT_IDEAL_MIN = _LP.render_target_min_sec
+LENGTH_FIT_IDEAL_MAX = _LP.render_target_max_sec
 
 
 def _evaluate_arc_quality(window: ScoredWindow) -> dict[str, float]:

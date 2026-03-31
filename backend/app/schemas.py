@@ -7,8 +7,11 @@ from pydantic import BaseModel, Field
 
 from app.db.models import (
     Candidate,
+    CandidateFeedback,
     Episode,
     Export,
+    FailureType,
+    FeedbackAction,
     Job,
     ScriptDraft,
     Shot,
@@ -544,3 +547,59 @@ class ExportDetailResponse(BaseModel):
             file_size_bytes=exp.file_size_bytes,
             metadata=exp.metadata_json or {},
         )
+
+
+# --- 실패 유형 태깅 ---
+
+VALID_FAILURE_TYPES: frozenset[str] = frozenset(ft.value for ft in FailureType)
+VALID_FEEDBACK_ACTIONS: frozenset[str] = frozenset(fa.value for fa in FeedbackAction)
+
+
+class FailureTagRequest(BaseModel):
+    failure_tags: list[str] = Field(default_factory=list, max_length=10)
+
+
+class FailureTagResponse(BaseModel):
+    id: str
+    failure_tags: list[str]
+
+
+# --- 운영자 피드백 로그 ---
+
+
+class CandidateFeedbackCreateRequest(BaseModel):
+    action: str  # FeedbackAction value
+    reason: str | None = None
+    failure_tags: list[str] = Field(default_factory=list, max_length=10)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CandidateFeedbackResponse(BaseModel):
+    id: str
+    candidate_id: str
+    action: str
+    reason: str | None
+    failure_tags: list[str]
+    before_snapshot: dict[str, Any]
+    after_snapshot: dict[str, Any]
+    metadata: dict[str, Any]
+    created_at: datetime | None
+
+    @classmethod
+    def from_model(cls, fb: CandidateFeedback) -> "CandidateFeedbackResponse":
+        return cls(
+            id=fb.id,
+            candidate_id=fb.candidate_id,
+            action=fb.action,
+            reason=fb.reason,
+            failure_tags=fb.failure_tags or [],
+            before_snapshot=fb.before_snapshot or {},
+            after_snapshot=fb.after_snapshot or {},
+            metadata=fb.metadata_json or {},
+            created_at=fb.created_at,
+        )
+
+
+class CandidateFeedbackListResponse(BaseModel):
+    items: list[CandidateFeedbackResponse]
+    total: int

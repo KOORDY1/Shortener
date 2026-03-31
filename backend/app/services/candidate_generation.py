@@ -38,14 +38,54 @@ from app.services.candidate_visual_signals import compute_visual_impact, generat
 from app.services.candidate_audio_signals import generate_audio_seeds_live
 from app.core.config import get_settings
 
-MIN_WINDOW_SEC = 30.0
-MAX_WINDOW_SEC = 180.0
-
 MAX_CANDIDATES = 14
 NMS_IOU_THRESHOLD = 0.52
 TEXT_DEDUPE_JACCARD_THRESHOLD = 0.82
 TEXT_DEDUPE_MAX_START_GAP_SEC = 20.0
 TEXT_DEDUPE_MIN_OVERLAP_SEC = 8.0
+
+
+@dataclass(frozen=True)
+class LengthPolicy:
+    """길이 정책 3계층 분리.
+
+    - search window: micro-event 기반 후보 탐색 범위
+    - core span total: 복합 후보의 코어 스팬 합산 상한
+    - render target: 실제 출력 쇼츠 목표 길이 (권장)
+    """
+
+    # 탐색 윈도우 (search window)
+    min_window_sec: float = 30.0
+    max_window_sec: float = 180.0
+
+    # 코어 아크 합산 (core span total)
+    max_2span_sec: float = 64.0
+    max_3span_sec: float = 90.0
+
+    # 최종 렌더 타깃 (render target)
+    render_target_min_sec: float = 30.0
+    render_target_max_sec: float = 75.0
+    render_ideal_sec: float = 50.0
+
+    @classmethod
+    def from_settings(cls) -> "LengthPolicy":
+        settings = get_settings()
+        return cls(
+            min_window_sec=settings.length_min_window_sec,
+            max_window_sec=settings.length_max_window_sec,
+            max_2span_sec=settings.length_max_2span_sec,
+            max_3span_sec=settings.length_max_3span_sec,
+            render_target_min_sec=settings.length_render_target_min_sec,
+            render_target_max_sec=settings.length_render_target_max_sec,
+            render_ideal_sec=settings.length_render_ideal_sec,
+        )
+
+
+_DEFAULT_LENGTH_POLICY = LengthPolicy()
+
+# 하위 호환 별칭 — 기존 코드에서 사용하는 모듈 수준 상수
+MIN_WINDOW_SEC = _DEFAULT_LENGTH_POLICY.min_window_sec
+MAX_WINDOW_SEC = _DEFAULT_LENGTH_POLICY.max_window_sec
 
 
 @dataclass
@@ -237,31 +277,120 @@ def _is_duplicate_candidate(candidate: ScoredWindow, kept: Sequence[ScoredWindow
     return any(_is_text_near_duplicate(candidate, item) for item in kept)
 
 
+def _diversity_penalty(candidate: ScoredWindow, kept: list[ScoredWindow]) -> float:
+    """인물·사건·payoff 유형 중복 시 diversity penalty를 반환한다.
+
+    kept에 이미 선택된 후보들과 candidate의 entity, window_reason,
+    ranking_focus 유사성을 검사해 0.0~0.25 범위 패널티를 합산한다.
+    패널티가 클수록 다양성 면에서 불리하다.
+    """
+    if not kept:
+        return 0.0
+
+    meta = candidate.metadata_json
+    cand_entities = set(meta.get("dominant_entities") or [])
+    cand_reason = str(meta.get("window_reason", ""))
+    cand_focus = str(meta.get("ranking_focus", ""))
+
+    max_entity_overlap = 0.0
+    reason_count = 0
+    focus_count = 0
+
+    for item in kept:
+        item_meta = item.metadata_json
+        # entity 겹침 (Jaccard)
+        item_entities = set(item_meta.get("dominant_entities") or [])
+        if cand_entities and item_entities:
+            union = cand_entities | item_entities
+            if union:
+                overlap = len(cand_entities & item_entities) / len(union)
+                max_entity_overlap = max(max_entity_overlap, overlap)
+
+        # window_reason 중복
+        if cand_reason and cand_reason == str(item_meta.get("window_reason", "")):
+            reason_count += 1
+
+        # ranking_focus 중복
+        if cand_focus and cand_focus == str(item_meta.get("ranking_focus", "")):
+            focus_count += 1
+
+    penalty = 0.0
+    # 인물 중복 패널티: entity Jaccard >= 0.6이면 최대 0.12
+    if max_entity_overlap >= 0.6:
+        penalty += min(0.12, (max_entity_overlap - 0.4) * 0.3)
+
+    # window_reason 중복 패널티: 동일 reason이 2개 이상이면 패널티
+    if reason_count >= 2:
+        penalty += 0.08
+    elif reason_count >= 1:
+        penalty += 0.04
+
+    # ranking_focus 중복 패널티
+    if focus_count >= 2:
+        penalty += 0.05
+
+    return min(0.25, penalty)
+
+
 def dedupe_scored_windows(
-    windows: list[ScoredWindow], limit: int = MAX_CANDIDATES
+    windows: list[ScoredWindow],
+    limit: int = MAX_CANDIDATES,
+    *,
+    diversity_aware: bool = True,
 ) -> list[ScoredWindow]:
+    """중복 제거 + diversity-aware selection.
+
+    1단계: 순수 중복 제거 (IOU + Jaccard + span 동일)
+    2단계: diversity_aware=True이면 diversity penalty를 적용해 재정렬 후 선택
+    """
     ordered = sorted(windows, key=lambda window: -window.total_score)
-    kept: list[ScoredWindow] = []
+
+    # 1단계: 순수 중복 제거
+    non_duplicates: list[ScoredWindow] = []
     for window in ordered:
-        if _is_duplicate_candidate(window, kept):
+        if _is_duplicate_candidate(window, non_duplicates):
             continue
-        kept.append(window)
-        if len(kept) >= limit:
-            break
+        non_duplicates.append(window)
+
+    if not diversity_aware or len(non_duplicates) <= limit:
+        return non_duplicates[:limit]
+
+    # 2단계: diversity-aware greedy selection
+    kept: list[ScoredWindow] = []
+    remaining = list(non_duplicates)
+
+    while remaining and len(kept) < limit:
+        best_idx = 0
+        best_effective_score = -1.0
+
+        for idx, cand in enumerate(remaining):
+            penalty = _diversity_penalty(cand, kept)
+            effective_score = cand.total_score * (1.0 - penalty)
+            if effective_score > best_effective_score:
+                best_effective_score = effective_score
+                best_idx = idx
+
+        kept.append(remaining.pop(best_idx))
+
     return kept
 
 
-def _shot_window_fallback(shots: Sequence[Shot], timeline_end: float) -> list[WindowSeed]:
+def _shot_window_fallback(
+    shots: Sequence[Shot],
+    timeline_end: float,
+    lp: LengthPolicy | None = None,
+) -> list[WindowSeed]:
+    lp = lp or _DEFAULT_LENGTH_POLICY
     seeds: list[WindowSeed] = []
     for start_index, start_shot in enumerate(shots):
         for end_index in range(start_index, min(len(shots), start_index + 14)):
             end_time = float(shots[end_index].end_time)
             duration = end_time - float(start_shot.start_time)
-            if duration > MAX_WINDOW_SEC:
+            if duration > lp.max_window_sec:
                 break
-            if duration < MIN_WINDOW_SEC:
+            if duration < lp.min_window_sec:
                 continue
-            if duration <= 75.0 or end_index - start_index <= 8:
+            if duration <= lp.render_target_max_sec or end_index - start_index <= 8:
                 seeds.append(
                     WindowSeed(
                         start_time=round(float(start_shot.start_time), 3),
@@ -270,11 +399,11 @@ def _shot_window_fallback(shots: Sequence[Shot], timeline_end: float) -> list[Wi
                         window_reason="shot_boundary_fallback",
                     )
                 )
-    if not seeds and timeline_end >= MIN_WINDOW_SEC:
+    if not seeds and timeline_end >= lp.min_window_sec:
         seeds.append(
             WindowSeed(
                 start_time=0.0,
-                end_time=min(timeline_end, MAX_WINDOW_SEC),
+                end_time=min(timeline_end, lp.max_window_sec),
                 events=[],
                 window_reason="timeline_fallback",
             )
@@ -309,7 +438,9 @@ def _enumerate_windows(
     timeline_end: float,
     segments: list[TranscriptSegment],
     shots: list[Shot],
+    lp: LengthPolicy | None = None,
 ) -> list[WindowSeed]:
+    lp = lp or _DEFAULT_LENGTH_POLICY
     seen: set[tuple[int, int]] = set()
     seeds: list[WindowSeed] = []
     events = build_micro_events(segments, shots)
@@ -317,7 +448,7 @@ def _enumerate_windows(
     def add_seed(start: float, end: float, event_slice: Sequence[CandidateEvent], reason: str) -> None:
         start = max(0.0, float(start))
         end = min(float(timeline_end), float(end))
-        if end - start < MIN_WINDOW_SEC or end - start > MAX_WINDOW_SEC:
+        if end - start < lp.min_window_sec or end - start > lp.max_window_sec:
             return
         key = (int(round(start * 100)), int(round(end * 100)))
         if key in seen:
@@ -339,16 +470,16 @@ def _enumerate_windows(
                 start_time = event_slice[0].start_time
                 end_time = event_slice[-1].end_time
                 duration = end_time - start_time
-                if duration > MAX_WINDOW_SEC:
+                if duration > lp.max_window_sec:
                     break
-                if duration < MIN_WINDOW_SEC:
+                if duration < lp.min_window_sec:
                     continue
                 reason = _event_window_reason(event_slice)
                 if reason:
                     add_seed(start_time, end_time, event_slice, reason)
         if seeds:
             return seeds
-    return _shot_window_fallback(shots, timeline_end)
+    return _shot_window_fallback(shots, timeline_end, lp)
 
 
 def score_window(
@@ -359,9 +490,11 @@ def score_window(
     episode_avg_cut_rate: float = 0.0,
     timeline_end: float = 0.0,
     weights: ScoringWeights | None = None,
+    length_policy: LengthPolicy | None = None,
 ) -> ScoredWindow | None:
+    lp = length_policy or _DEFAULT_LENGTH_POLICY
     duration = seed.end_time - seed.start_time
-    if duration < MIN_WINDOW_SEC or duration > MAX_WINDOW_SEC:
+    if duration < lp.min_window_sec or duration > lp.max_window_sec:
         return None
 
     speech_coverage = _merged_speech_coverage(segments, seed.start_time, seed.end_time)
@@ -607,8 +740,11 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
     timeline_end = _episode_timeline_end(episode, shots, segments)
     episode_avg_cut_rate = len(shots) / max(timeline_end, 1.0)
 
+    # 길이 정책 로드
+    length_policy = LengthPolicy.from_settings()
+
     # Track A: dialogue-driven seeds
-    dialogue_seeds = _enumerate_windows(timeline_end, segments, shots)
+    dialogue_seeds = _enumerate_windows(timeline_end, segments, shots, length_policy)
 
     # Track B: visual-impact seeds
     visual_seed_dicts = generate_visual_seeds(shots, segments, timeline_end)
@@ -655,10 +791,11 @@ def build_candidates_for_episode(db: Session, episode_id: str) -> list[ScoredWin
             episode_avg_cut_rate=episode_avg_cut_rate,
             timeline_end=timeline_end,
             weights=weights,
+            length_policy=length_policy,
         )) is not None
     ]
 
-    if not scored and timeline_end < MIN_WINDOW_SEC:
+    if not scored and timeline_end < length_policy.min_window_sec:
         excerpt = _excerpt_from_segments(segments, 0.0, timeline_end)
         scored.append(
             ScoredWindow(

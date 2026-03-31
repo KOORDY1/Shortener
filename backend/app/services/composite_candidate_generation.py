@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.services.candidate_events import CandidateEvent
-from app.services.candidate_generation import ScoredWindow
+from app.services.candidate_generation import LengthPolicy, ScoredWindow
 from app.services.candidate_arc_search import (
     ArcCandidate,
     arc_to_scored_window_metadata,
@@ -12,8 +12,11 @@ MAX_COMPOSITE_CANDIDATES = 10
 MAX_COMPOSITE_INPUTS = 40
 MIN_GAP_SEC = 6.0
 MAX_GAP_SEC = 420.0
-MAX_TOTAL_DURATION_SEC = 64.0
-MAX_TRIPLE_DURATION_SEC = 90.0  # 3-스팬 트리플 최대 총 길이
+
+# LengthPolicy에서 가져오되 하위 호환 상수로도 유지
+_LP = LengthPolicy.from_settings()
+MAX_TOTAL_DURATION_SEC = _LP.max_2span_sec
+MAX_TRIPLE_DURATION_SEC = _LP.max_3span_sec
 
 
 def _tokens(window: ScoredWindow) -> set[str]:

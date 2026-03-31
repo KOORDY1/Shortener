@@ -1,11 +1,15 @@
 import {
   CandidateDetail,
+  CandidateFeedbackListResponse,
   CandidateListResponse,
   Episode,
   EpisodeListResponse,
   EpisodeOperationOkResponse,
   EpisodeTimeline,
   ExportDetail,
+  FailureTagResponse,
+  FailureType,
+  FeedbackAction,
   JobListResponse,
   ScriptDraftListResponse,
   VideoDraftDetail,
@@ -185,6 +189,64 @@ export async function getVideoDraft(videoDraftId: string): Promise<VideoDraftDet
 
 export async function getExport(exportId: string): Promise<ExportDetail> {
   return apiFetch<ExportDetail>(`/exports/${exportId}`);
+}
+
+// --- 실패 유형 태깅 ---
+
+export async function getFailureTags(candidateId: string): Promise<FailureTagResponse> {
+  return apiFetch<FailureTagResponse>(`/candidates/${candidateId}/failure-tags`);
+}
+
+export async function setFailureTags(
+  candidateId: string,
+  failureTags: FailureType[]
+): Promise<FailureTagResponse> {
+  const response = await fetch(`${apiBaseUrl}/candidates/${candidateId}/failure-tags`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ failure_tags: failureTags }),
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new ApiHttpError(
+      response.status,
+      `API request failed: ${response.status} ${response.statusText}`
+    );
+  }
+  return (await response.json()) as FailureTagResponse;
+}
+
+// --- 운영자 피드백 로그 ---
+
+export async function getCandidateFeedbacks(
+  candidateId: string
+): Promise<CandidateFeedbackListResponse> {
+  return apiFetch<CandidateFeedbackListResponse>(
+    `/candidates/${candidateId}/feedbacks`
+  );
+}
+
+export async function createCandidateFeedback(
+  candidateId: string,
+  payload: {
+    action: FeedbackAction;
+    reason?: string;
+    failure_tags?: FailureType[];
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}/candidates/${candidateId}/feedbacks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new ApiHttpError(
+      response.status,
+      `API request failed: ${response.status} ${response.statusText}`
+    );
+  }
 }
 
 export { apiBaseUrl };

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { CandidateFeedbackPanel } from "@/components/candidate-feedback-panel";
 import { CandidateJobsAndDraftsLive } from "@/components/candidate-jobs-and-drafts-live";
 import { CompositeSpanPreview } from "@/components/composite-span-preview";
 import { DebugDisclosure } from "@/components/debug-disclosure";
@@ -14,6 +15,7 @@ import { formatDuration, formatPreciseTimecode, formatTimecode } from "@/lib/for
 import { scoreKeyLabel } from "@/lib/labels";
 import type {
   CandidateDetail,
+  FailureType,
   Job,
   ScriptDraft,
   ShortClipRenderConfig,
@@ -26,6 +28,7 @@ type Props = {
   drafts: ScriptDraft[];
   jobs: Job[];
   videoDrafts: VideoDraftSummary[];
+  initialFailureTags?: FailureType[];
 };
 
 export function CandidateDetailContent({
@@ -33,7 +36,8 @@ export function CandidateDetailContent({
   candidate,
   drafts,
   jobs,
-  videoDrafts
+  videoDrafts,
+  initialFailureTags = []
 }: Props) {
   const generatedBy =
     typeof candidate.metadata.generated_by === "string"
@@ -221,6 +225,11 @@ export function CandidateDetailContent({
         </div>
         {candidate.shots.length === 0 ? <p className="muted">이 구간과 겹치는 샷이 없습니다.</p> : null}
       </div>
+
+      <CandidateFeedbackPanel
+        candidateId={candidateId}
+        initialFailureTags={initialFailureTags}
+      />
 
       <DebugDisclosure title="기술 정보 펼치기">
         {candidate.shots.some((shot) => shot.thumbnail_path) ? (
