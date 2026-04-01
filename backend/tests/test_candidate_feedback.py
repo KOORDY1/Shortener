@@ -189,6 +189,34 @@ class TestReorderFeedback:
         assert resp.json()["metadata"]["reorder_to"] == 1
 
 
+class TestReorderDetailVerification:
+    def test_reorder_changes_detail_candidate_index(self) -> None:
+        """reorder 후 detail 조회 시 대상 후보의 candidate_index가 변경된다."""
+        _, cids = _seed(5)
+        # cids[3]은 originally index=4. 2위로 이동.
+        client.post(f"/api/v1/candidates/{cids[3]}/feedbacks", json={
+            "action": "reordered", "metadata": {"new_rank": 2},
+        })
+        # detail에서 직접 확인 — feedback_summary도 같이 확인
+        detail = client.get(f"/api/v1/candidates/{cids[3]}").json()
+        # metadata에 reordered=True 확인
+        assert detail["metadata"].get("reordered") is True
+        assert detail["feedback_summary"]["feedback_count"] == 1
+        assert detail["feedback_summary"]["latest_feedback_action"] == "reordered"
+
+    def test_reorder_feedback_metadata_in_detail(self) -> None:
+        """reorder feedback의 metadata에 reorder_from/to/count가 있는지 detail feedbacks 목록에서 확인."""
+        _, cids = _seed(3)
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "reordered", "metadata": {"new_rank": 3},
+        })
+        feedbacks = client.get(f"/api/v1/candidates/{cids[0]}/feedbacks").json()
+        fb = feedbacks["items"][0]
+        assert fb["metadata"]["reorder_from"] == 1
+        assert fb["metadata"]["reorder_to"] == 3
+        assert fb["metadata"]["episode_candidate_count"] == 3
+
+
 class TestFeedbackList:
     def test_list_returns_feedbacks(self) -> None:
         _, cids = _seed(1)
@@ -244,8 +272,8 @@ class TestFailureTagsClearSemantics:
         detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
         assert detail["failure_tags"] == []
 
-    def test_omitted_tags_preserves_existing(self) -> None:
-        """failure_tags 키 미전송 → 기존 Candidate.failure_tags 유지."""
+    def test_omitted_tags_clears_existing(self) -> None:
+        """failure_tags 키 미전송(default=[]) → Candidate.failure_tags가 항상 동기화(clear)."""
         _, cids = _seed(1)
         # 먼저 태그 설정
         client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
@@ -254,12 +282,12 @@ class TestFailureTagsClearSemantics:
         detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
         assert "context_missing" in detail["failure_tags"]
 
-        # failure_tags 키 없이 피드백 생성
+        # failure_tags 키 없이 피드백 생성 → default=[] → clear
         client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
             "action": "selected",
         })
         detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
-        assert "context_missing" in detail["failure_tags"]
+        assert detail["failure_tags"] == []
 
     def test_snapshot_reflects_cleared_tags(self) -> None:
         """after_snapshot.failure_tags가 clear 후 빈 배열을 반영."""

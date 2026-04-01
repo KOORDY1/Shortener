@@ -587,8 +587,8 @@ class FailureTagResponse(BaseModel):
 class CandidateFeedbackCreateRequest(BaseModel):
     action: str  # FeedbackAction value
     reason: str | None = None
-    # None = 미전송(기존 tags 유지), [] = 명시적 clear, ["tag",...] = overwrite
-    failure_tags: list[str] | None = None
+    # 항상 존재 — []=clear, ["tag",...]=overwrite+dedupe. 항상 Candidate.failure_tags와 동기화.
+    failure_tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

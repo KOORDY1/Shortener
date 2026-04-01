@@ -90,6 +90,11 @@ export function CandidateFeedbackPanel({
   }, [loadFeedbacks]);
 
   const submitFeedback = useCallback(async () => {
+    // reordered일 때 new_rank 필수 검증
+    if (feedbackAction === "reordered" && (newRank === "" || isNaN(parseInt(newRank, 10)))) {
+      setSubmitResult({ ok: false, message: "새 순위를 입력하세요" });
+      return;
+    }
     setSaving(true);
     setSubmitResult(null);
     try {
@@ -105,7 +110,17 @@ export function CandidateFeedbackPanel({
       });
       setFeedbackReason("");
       setNewRank("");
-      setSubmitResult({ ok: true, message: `${FEEDBACK_ACTION_LABELS[feedbackAction]} 완료` });
+
+      // reordered 성공 메시지에 from→to 포함
+      let successMsg = `${FEEDBACK_ACTION_LABELS[feedbackAction]} 완료`;
+      if (feedbackAction === "reordered") {
+        const from = fb.metadata.reorder_from;
+        const to = fb.metadata.reorder_to;
+        if (typeof from === "number" && typeof to === "number") {
+          successMsg = `${from}위 → ${to}위 이동 완료`;
+        }
+      }
+      setSubmitResult({ ok: true, message: successMsg });
 
       // 상태 반영
       const afterStatus = fb.after_snapshot.status;

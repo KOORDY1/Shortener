@@ -185,6 +185,14 @@ export function CandidateDetailContent({
                 <strong>{candidate.feedback_summary.latest_feedback_reason}</strong>
               </div>
             ) : null}
+            {candidate.feedback_summary.latest_feedback_at ? (
+              <div className="kpi">
+                <span className="muted">최근 시각</span>
+                <strong style={{ fontSize: "0.8rem" }}>
+                  {new Date(candidate.feedback_summary.latest_feedback_at).toLocaleString("ko-KR")}
+                </strong>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {candidate.failure_tags.length > 0 ? (

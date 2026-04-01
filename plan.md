@@ -7,10 +7,213 @@
 
 > **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료 ✅
 >
-> 1. ~~**failure_tags clear semantics**~~ ✅ — `failure_tags: list[str] | None = None`으로 변경. `None`=미전송(기존 유지), `[]`=명시적 clear, `["tag",...]`=overwrite+dedupe. 테스트 3건 추가.
-> 2. ~~**reordered용 new_rank 입력 UI**~~ ✅ — 피드백 패널에서 action=reordered 선택 시 숫자 입력 필드 표시. 제출 시 metadata.new_rank에 포함. 이력에 순위 변경(#from→#to) 표시.
-> 3. ~~**feedback_summary 적극 표시**~~ ✅ — 후보 상세 화면 상태 패널에 피드백 건수/최근 액션/최근 사유를 KPI로 표시. failure_tags 뱃지 표시. selected 상태 배지 추가.
-> 4. ~~**회귀 테스트 23건**~~ ✅ — clear semantics(빈 배열→clear, 미전송→유지, snapshot 반영), feedback_summary 전체 필드 검증, count 증분, 빈 상태 기본값 테스트 추가.
+> 1. ~~**failure_tags 항상 동기화**~~ ✅ — `default_factory=list`로 변경. 피드백 생성 시 항상 `Candidate.failure_tags`와 동기화. `[]`=clear, `["tag"]=overwrite+dedupe`. 간접 보존(None) 의미론 제거.
+> 2. ~~**reordered UI 보강**~~ ✅ — new_rank 빈값 시 제출 차단 + "새 순위를 입력하세요" 에러. 성공 시 "4위→2위 이동 완료" 메시지. 이력에 순위 전이 표시.
+> 3. ~~**feedback_summary 적극 표시**~~ ✅ — 후보 상세 화면에 피드백 건수/최근 액션/최근 사유/최근 시각 KPI 표시. failure_tags 뱃지. 0건이면 숨김.
+> 4. ~~**테스트 마감 25건**~~ ✅ — reorder→detail candidate_index 변경 검증, reorder feedback metadata detail 확인 추가. canonical shape 문서화.
+
+---
+
+## 1단계: `failure_tags=[]` clear semantics 명확화 ✅
+수정 대상:
+- `backend/app/api/v1/candidate_feedback.py`
+- `backend/tests/test_candidate_feedback.py`
+- 필요 시 `backend/app/schemas.py`
+
+현재 문제:
+- 지금은 `if request.failure_tags:`일 때만 Candidate.failure_tags를 overwrite한다
+- 그래서 빈 배열 `[]`로 “태그를 전부 지우고 싶다”는 의도가 반영되지 않을 수 있다
+
+구현 요구사항:
+- `CandidateFeedbackCreateRequest`에 `failure_tags` 필드가 존재하면, **비어 있어도** Candidate.failure_tags를 그대로 overwrite 하도록 바꿔라
+- 정책:
+  - `failure_tags`가 `[]`면 clear
+  - `failure_tags`가 `["a", "b", "a"]`면 dedupe 후 `["a", "b"]`
+- 지금 구조상 `failure_tags`는 default_factory=list 라 항상 존재하므로,
+  - 사실상 **feedback 생성 시 Candidate.failure_tags는 항상 request.failure_tags로 동기화**
+  - 이 방향으로 단순화하는 편이 낫다
+- `after_snapshot.failure_tags`도 clear 결과를 정확히 반영해야 한다
+- `feedback.failure_tags`와 Candidate 현재 `failure_tags`가 일관되게 유지되게 해라
+
+완료 기준: ✅ 모두 달성
+- ✅ `failure_tags=[]`로 feedback 생성 시 Candidate.failure_tags가 빈 배열이 된다
+- ✅ clear/overwrite semantics가 API 레벨에서 명확해진다 — `default_factory=list`, 항상 동기화
+
+---
+
+## 2단계: `reordered`용 `new_rank` 입력 UI 추가 ✅
+수정 대상:
+- `frontend/components/candidate-feedback-panel.tsx`
+- `frontend/lib/types.ts`
+- `frontend/lib/api.ts`
+- 필요 시 `frontend/components/candidate-detail-content.tsx`
+
+현재 문제:
+- 백엔드는 `metadata.new_rank`를 받아 episode 전체 재정렬을 수행한다
+- 하지만 프론트 패널은 아직 action select + reason input만 있고, `reordered`일 때 `new_rank`를 자연스럽게 입력하는 UI가 없다
+
+구현 요구사항:
+- `feedbackAction === "reordered"`일 때만 `new_rank` 숫자 입력 UI를 노출해라
+- 입력 방식 예:
+  - `type="number"`
+  - 최소 1
+  - placeholder: `새 순위`
+- submit 시:
+  - `metadata.new_rank = enteredRank`
+  - 숫자 파싱/검증
+- UX:
+  - 빈 값이면 submit 막기 또는 “새 순위를 입력하세요” 오류 표시
+  - 성공 후 입력 초기화
+- `submitResult` 메시지에 가능하면:
+  - `4위 → 2위 이동 완료`
+  같은 문구를 간단히 표시해도 좋다
+- 피드백 이력에도 `reordered`의 경우 metadata의 `reorder_from/reorder_to`가 있으면 짧게 보여줘라
+
+완료 기준: ✅ 모두 달성
+- ✅ 운영자가 프론트에서 `reordered`를 실제로 사용할 수 있다 — 숫자 입력 + 빈값 검증
+- ✅ `new_rank` 없이 reorder를 쓰는 어색한 상태가 사라진다 — 빈값 시 "새 순위를 입력하세요" 에러
+- ✅ 성공 메시지 "4위→2위 이동 완료", 이력에 순위 전이 표시
+
+---
+
+## 3단계: candidate detail 화면에 `feedback_summary` 직접 표시 ✅
+수정 대상:
+- `frontend/components/candidate-detail-content.tsx`
+- 필요 시 `frontend/lib/types.ts`
+
+현재 문제:
+- 백엔드가 이미 `feedback_summary`를 detail 응답에 넣어준다
+- 하지만 현재 화면은 이를 거의 활용하지 않고 있다
+
+구현 요구사항:
+- candidate detail 상단 또는 상태 배지 근처에 다음 정보를 작게 노출해라
+  - `피드백 3건`
+  - `최근 액션: rejected`
+  - `최근 사유: 맥락 부족`
+  - `최근 시각: ...`
+- 너무 크게 만들지 말고, 내부 운영툴에 맞게 compact KPI/summary 정도로 표시
+- `latest_feedback_reason`가 없으면 숨김
+- `feedback_count === 0`이면
+  - `피드백 없음`
+  또는 아예 summary 박스를 숨겨도 된다
+- 가능하면 `failure_tags`도 현재 상태 요약으로 한 줄 표시
+  - 예: `현재 failure tags: no_payoff, too_long`
+
+완료 기준: ✅ 모두 달성
+- ✅ 후보 상세 화면만 봐도 최근 운영 피드백 상태를 바로 파악할 수 있다 — 건수/액션/사유/시각 KPI
+- ✅ debug disclosure를 열지 않아도 핵심 운영 정보가 보인다 — failure_tags 뱃지, selected 배지
+
+---
+
+## 4단계: detail 응답 구조와 테스트 마감 ✅
+수정 대상:
+- `backend/tests/test_candidate_feedback.py`
+- 필요 시 `backend/app/schemas.py`
+- 필요 시 `backend/app/api/v1/candidate_read.py`
+
+구현 요구사항:
+- 우선은 현재 `feedback_summary` nested 구조를 유지해도 된다
+- 대신 아래 테스트를 추가/보강해라
+
+### 추가 테스트
+1. `failure_tags=[]` feedback 생성 시
+   - Candidate.failure_tags == []
+   - `after_snapshot.failure_tags == []`
+
+2. `reordered` action with `new_rank`
+   - feedback 응답 metadata에 `reorder_from`, `reorder_to`, `episode_candidate_count` 존재
+   - detail 조회 후 대상 candidate의 `candidate_index`가 바뀌었는지 확인
+
+3. detail 응답의 `feedback_summary`
+   - `feedback_count`
+   - `latest_feedback_action`
+   - `latest_feedback_at`
+   - `latest_feedback_reason`
+   가 예상대로 채워지는지
+
+4. 필요하면 프론트 타입과 응답 shape 불일치 방지용 최소 타입 점검
+
+### 구조 판단
+- 이번 단계에서는 top-level 승격까지 무리해서 하지 않아도 된다
+- 다만 `feedback_summary` 구조를 계속 유지할 거면 `plan.md`에도 canonical shape로 명시해라
+- 즉 “이 구조로 간다”를 문서와 테스트로 고정하는 게 중요하다
+
+완료 기준: ✅ 모두 달성
+- ✅ clear semantics와 detail summary shape가 테스트로 보호된다 — 25건 pytest
+- ✅ 현재 구조를 후속 작업에서 쉽게 깨뜨리지 않게 된다
+
+### Canonical `feedback_summary` Shape (고정 인터페이스)
+
+```python
+class CandidateFeedbackSummary(BaseModel):
+    feedback_count: int = 0
+    latest_feedback_action: str | None = None
+    latest_feedback_at: datetime | None = None
+    latest_feedback_reason: str | None = None
+```
+
+```typescript
+type CandidateFeedbackSummary = {
+  feedback_count: number;
+  latest_feedback_action?: string | null;
+  latest_feedback_at?: string | null;
+  latest_feedback_reason?: string | null;
+};
+```
+
+**`CandidateDetailResponse`에 포함되는 직접 노출 필드:**
+- `selected: bool` — 후보 채택 여부
+- `failure_tags: list[str]` — 현재 실패 유형 태그 (항상 피드백과 동기화)
+- `feedback_summary: CandidateFeedbackSummary` — nested 구조 유지
+
+**`failure_tags` 동기화 정책:**
+- 피드백 생성 시 `failure_tags` 필드는 항상 존재 (`default_factory=list`)
+- `[]` → Candidate.failure_tags clear
+- `["tag", ...]` → overwrite + dedupe
+- 간접 보존(None) 의미론 없음 — 항상 동기화
+
+---
+
+## 5단계: plan.md 업데이트
+수정 대상:
+- `plan.md`
+
+구현 요구사항:
+- 아래를 최신 상태로 반영해라
+  - `failure_tags`는 feedback 생성 시 overwrite 동기화되며, 빈 배열이면 clear
+  - `reordered`는 프론트 패널에서 `new_rank` 입력 가능
+  - candidate detail은 `feedback_summary`와 `failure_tags`를 화면에 노출
+  - feedback 관련 회귀 테스트가 보강됨
+- 문서 과장 금지
+- “남은 핵심 과제”도 필요하면 최신화
+  - 예: 다음은 feedback 기반 weight tuning / track bias 분석 / ranking policy 개선
+
+완료 기준:
+- 문서가 구현 상태를 정확히 반영한다
+
+---
+
+## 구현 원칙 요약
+- `failure_tags=[]`는 clear여야 함
+- `reordered`는 백엔드뿐 아니라 프론트에서도 실제 사용 가능해야 함
+- feedback summary는 받은 데이터를 화면에서 바로 보여줘야 함
+- nested `feedback_summary` 구조를 유지한다면 문서와 테스트로 고정
+- 현재 구조 위에서 마감 정리
+
+---
+
+## 원하는 작업 방식
+- 먼저 아주 짧게 구현 계획 정리
+- 그 다음 실제 코드 수정
+- 마지막에
+  - 수정 파일
+  - `failure_tags` clear 정책
+  - `reordered` UI 방식
+  - detail 화면에 추가한 feedback summary 표시
+  - 추가/보강한 테스트
+  - 남은 리스크
+  - 추천 커밋 메시지 1개
+를 짧게 정리해줘
 ---
 
 ## 1단계: `reordered`를 episode 전체 재정렬로 완성 ✅

@@ -109,9 +109,8 @@ def _apply_feedback_action(
             candidate.metadata_json = meta
         # new_rank가 없거나 변환 불가 시 — reordered 표시하지 않고 로그만 기록
 
-    # failure_tags 동기화: None=미전송(유지), []=clear, ["tag",...]=overwrite+dedupe
-    if request.failure_tags is not None:
-        candidate.failure_tags = list(dict.fromkeys(request.failure_tags))
+    # failure_tags 항상 동기화: []=clear, ["tag",...]=overwrite+dedupe
+    candidate.failure_tags = list(dict.fromkeys(request.failure_tags))
 
 
 @router.put("/candidates/{candidate_id}/failure-tags", response_model=FailureTagResponse)
@@ -156,13 +155,12 @@ def create_feedback(
             status_code=422,
             detail=f"유효하지 않은 action: {request.action}. 허용값: {sorted(VALID_FEEDBACK_ACTIONS)}",
         )
-    if request.failure_tags is not None:
-        invalid_tags = [t for t in request.failure_tags if t not in VALID_FAILURE_TYPES]
-        if invalid_tags:
-            raise HTTPException(
-                status_code=422,
-                detail=f"유효하지 않은 failure_type: {invalid_tags}. 허용값: {sorted(VALID_FAILURE_TYPES)}",
-            )
+    invalid_tags = [t for t in request.failure_tags if t not in VALID_FAILURE_TYPES]
+    if invalid_tags:
+        raise HTTPException(
+            status_code=422,
+            detail=f"유효하지 않은 failure_type: {invalid_tags}. 허용값: {sorted(VALID_FAILURE_TYPES)}",
+        )
 
     # before snapshot
     before_snapshot = _candidate_snapshot(candidate)
@@ -184,7 +182,7 @@ def create_feedback(
         )
     ) or 0
 
-    deduped_tags = list(dict.fromkeys(request.failure_tags)) if request.failure_tags is not None else []
+    deduped_tags = list(dict.fromkeys(request.failure_tags))
     feedback = CandidateFeedback(
         candidate_id=candidate.id,
         action=request.action,
