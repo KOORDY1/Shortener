@@ -82,32 +82,21 @@ def _apply_feedback_action(
         candidate.metadata_json = meta
 
     elif action == FeedbackAction.REORDERED.value:
-        raw_rank = request.metadata.get("new_rank")
-        # int-like 값 허용 (float 5.0, str "5" 등도 변환 시도)
-        resolved_rank: int | None = None
-        if isinstance(raw_rank, int):
-            resolved_rank = raw_rank
-        elif isinstance(raw_rank, float) and raw_rank == int(raw_rank):
-            resolved_rank = int(raw_rank)
-        elif isinstance(raw_rank, str) and raw_rank.isdigit():
-            resolved_rank = int(raw_rank)
-
-        if resolved_rank is not None:
+        if request.metadata.new_rank is not None:
             old_rank = candidate.candidate_index
             episode_count = db.scalar(
                 select(func.count())
                 .select_from(Candidate)
                 .where(Candidate.episode_id == candidate.episode_id)
             ) or 1
-            clamped_rank = max(1, min(resolved_rank, episode_count))
+            clamped_rank = max(1, min(request.metadata.new_rank, episode_count))
             _reorder_episode_candidates(db, candidate, clamped_rank)
-            request.metadata["reorder_from"] = old_rank
-            request.metadata["reorder_to"] = clamped_rank
-            request.metadata["episode_candidate_count"] = episode_count
+            request.metadata.reorder_from = old_rank
+            request.metadata.reorder_to = clamped_rank
+            request.metadata.episode_candidate_count = episode_count
             meta = dict(candidate.metadata_json or {})
             meta["reordered"] = True
             candidate.metadata_json = meta
-        # new_rank가 없거나 변환 불가 시 — reordered 표시하지 않고 로그만 기록
 
     # failure_tags 항상 동기화: []=clear, ["tag",...]=overwrite+dedupe
     candidate.failure_tags = list(dict.fromkeys(request.failure_tags))
@@ -183,27 +172,42 @@ def create_feedback(
     ) or 0
 
     deduped_tags = list(dict.fromkeys(request.failure_tags))
+    request.metadata.episode_selected_count = selected_count
+    fb_metadata = {k: v for k, v in request.metadata.model_dump().items() if v is not None}
 
-    # created_seq: 삽입 순서 보장용 — max + 1
-    max_seq = db.scalar(
-        select(func.coalesce(func.max(CandidateFeedback.created_seq), 0))
-    ) or 0
-    next_seq = max_seq + 1
+    # created_seq: 삽입 순서 보장 — max+1, unique 충돌 시 retry (최대 3회)
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-    feedback = CandidateFeedback(
-        candidate_id=candidate.id,
-        created_seq=next_seq,
-        action=request.action,
-        reason=request.reason,
-        failure_tags=deduped_tags,
-        before_snapshot=before_snapshot,
-        after_snapshot=after_snapshot,
-        metadata_json={
-            **request.metadata,
-            "episode_selected_count": selected_count,
-        },
-    )
-    db.add(feedback)
+    for _attempt in range(3):
+        max_seq = db.scalar(
+            select(func.coalesce(func.max(CandidateFeedback.created_seq), 0))
+        ) or 0
+
+        feedback = CandidateFeedback(
+            candidate_id=candidate.id,
+            created_seq=max_seq + 1,
+            action=request.action,
+            reason=request.reason,
+            failure_tags=deduped_tags,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            metadata_json=fb_metadata,
+        )
+        db.add(feedback)
+        try:
+            db.flush()
+            break
+        except SAIntegrityError:
+            db.rollback()
+            # candidate 상태는 이미 변경됐으므로 다시 apply
+            candidate = get_candidate_or_404(db, candidate_id)
+            _apply_feedback_action(db, candidate, request.action, request)
+            db.add(candidate)
+            after_snapshot = _candidate_snapshot(candidate)
+            feedback.after_snapshot = after_snapshot
+    else:
+        raise HTTPException(status_code=409, detail="피드백 생성 충돌 — 재시도 후에도 실패")
+
     db.commit()
     db.refresh(feedback)
     return CandidateFeedbackResponse.from_model(feedback)
@@ -219,7 +223,7 @@ def list_feedbacks(
         db.scalars(
             select(CandidateFeedback)
             .where(CandidateFeedback.candidate_id == candidate_id)
-            .order_by(CandidateFeedback.created_seq.desc().nulls_last())
+            .order_by(CandidateFeedback.created_seq.desc().nulls_last(), CandidateFeedback.created_at.desc())
         )
     )
     total = db.scalar(

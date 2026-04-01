@@ -31,7 +31,7 @@ type Props = {
   initialFailureTags: FailureType[];
   candidateStatus: string;
   candidateSelected: boolean;
-  onStatusChange?: (status: string, selected: boolean) => void;
+  onStatusChange?: () => void;
 };
 
 export function CandidateFeedbackPanel({
@@ -98,10 +98,9 @@ export function CandidateFeedbackPanel({
     setSaving(true);
     setSubmitResult(null);
     try {
-      const metadata: Record<string, string | number | boolean | null> =
-        feedbackAction === "reordered" && newRank !== ""
-          ? { new_rank: parseInt(newRank, 10) }
-          : {};
+      const metadata = feedbackAction === "reordered" && newRank !== ""
+        ? { new_rank: parseInt(newRank, 10) }
+        : {};
       const fb = await createCandidateFeedback(candidateId, {
         action: feedbackAction,
         reason: feedbackReason || undefined,
@@ -113,12 +112,8 @@ export function CandidateFeedbackPanel({
 
       // reordered 성공 메시지에 from→to 포함
       let successMsg = `${FEEDBACK_ACTION_LABELS[feedbackAction]} 완료`;
-      if (feedbackAction === "reordered") {
-        const from = fb.metadata.reorder_from;
-        const to = fb.metadata.reorder_to;
-        if (typeof from === "number" && typeof to === "number") {
-          successMsg = `${from}위 → ${to}위 이동 완료`;
-        }
+      if (feedbackAction === "reordered" && fb.metadata.reorder_from != null && fb.metadata.reorder_to != null) {
+        successMsg = `${fb.metadata.reorder_from}위 → ${fb.metadata.reorder_to}위 이동 완료`;
       }
       setSubmitResult({ ok: true, message: successMsg });
 
@@ -127,7 +122,7 @@ export function CandidateFeedbackPanel({
       const afterSelected = fb.after_snapshot.selected;
       setCurrentStatus(afterStatus);
       setCurrentSelected(afterSelected);
-      onStatusChange?.(afterStatus, afterSelected);
+      onStatusChange?.();
 
       await loadFeedbacks();
     } catch (e) {

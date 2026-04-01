@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { CandidateSummary } from "@/lib/types";
+import { FAILURE_TYPE_LABELS } from "@/lib/types";
+import type { CandidateSummary, FailureType } from "@/lib/types";
 import { badgeLabel } from "@/lib/labels";
 import { formatDuration, formatTimecode } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
@@ -27,6 +28,7 @@ export function CandidateCard({ candidate }: Props) {
         </div>
         <div className="row">
           <StatusBadge value={candidate.status} />
+          {candidate.selected ? <StatusBadge value="채택됨" /> : null}
           {candidate.composite ? <StatusBadge value="composite" /> : null}
         </div>
       </div>
@@ -44,6 +46,25 @@ export function CandidateCard({ candidate }: Props) {
           <strong>{candidate.span_count ?? 1}</strong>
         </div>
       </div>
+      {candidate.failure_tags.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+          {candidate.failure_tags.map((tag) => (
+            <span
+              key={tag}
+              style={{
+                padding: "0.1rem 0.4rem",
+                borderRadius: "0.5rem",
+                fontSize: "0.7rem",
+                background: "#fef2f2",
+                color: "#991b1b",
+                border: "1px solid #fecaca"
+              }}
+            >
+              {FAILURE_TYPE_LABELS[tag as FailureType] ?? tag}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="row">
         <Link href={`/candidates/${candidate.id}`} className="link-button">
           미리보기

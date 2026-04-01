@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import Link from "next/link";
 import { CandidateFeedbackPanel } from "@/components/candidate-feedback-panel";
@@ -39,6 +40,7 @@ export function CandidateDetailContent({
   jobs,
   videoDrafts
 }: Props) {
+  const router = useRouter();
   const generatedBy =
     typeof candidate.metadata.generated_by === "string"
       ? candidate.metadata.generated_by
@@ -282,6 +284,7 @@ export function CandidateDetailContent({
         initialFailureTags={candidate.failure_tags}
         candidateStatus={candidate.status}
         candidateSelected={candidate.selected}
+        onStatusChange={() => router.refresh()}
       />
 
       <DebugDisclosure title="기술 정보 펼치기">

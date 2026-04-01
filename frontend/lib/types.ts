@@ -62,6 +62,8 @@ export type CandidateSummary = {
   total_score: number;
   composite?: boolean;
   span_count?: number;
+  selected: boolean;
+  failure_tags: FailureType[];
 };
 
 export type ClipSpan = {
@@ -302,6 +304,14 @@ export type CandidateFeedbackSnapshot = {
   failure_tags: FailureType[];
 };
 
+export type FeedbackResponseMetadata = {
+  new_rank?: number | null;
+  reorder_from?: number | null;
+  reorder_to?: number | null;
+  episode_candidate_count?: number | null;
+  episode_selected_count?: number | null;
+};
+
 export type CandidateFeedback = {
   id: string;
   candidate_id: string;
@@ -310,7 +320,7 @@ export type CandidateFeedback = {
   failure_tags: FailureType[];
   before_snapshot: CandidateFeedbackSnapshot;
   after_snapshot: CandidateFeedbackSnapshot;
-  metadata: Record<string, string | number | boolean | null>;
+  metadata: FeedbackResponseMetadata;
   created_at?: string | null;
 };
 

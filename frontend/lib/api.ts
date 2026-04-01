@@ -227,13 +227,17 @@ export async function getCandidateFeedbacks(
   );
 }
 
+export type FeedbackRequestMetadata = {
+  new_rank?: number | null;
+};
+
 export async function createCandidateFeedback(
   candidateId: string,
   payload: {
     action: FeedbackAction;
     reason?: string;
     failure_tags?: FailureType[];
-    metadata?: Record<string, string | number | boolean | null>;
+    metadata?: FeedbackRequestMetadata;
   }
 ): Promise<CandidateFeedback> {
   const response = await fetch(`${apiBaseUrl}/candidates/${candidateId}/feedbacks`, {

@@ -18,7 +18,7 @@ def _build_feedback_summary(db: Session, candidate_id: str) -> CandidateFeedback
     latest = db.scalars(
         select(CandidateFeedback)
         .where(CandidateFeedback.candidate_id == candidate_id)
-        .order_by(CandidateFeedback.created_seq.desc().nulls_last())
+        .order_by(CandidateFeedback.created_seq.desc().nulls_last(), CandidateFeedback.created_at.desc())
         .limit(1)
     ).first()
 

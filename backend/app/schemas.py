@@ -227,6 +227,8 @@ class CandidateSummary(BaseModel):
     total_score: float
     composite: bool = False
     span_count: int = 1
+    selected: bool = False
+    failure_tags: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_model(cls, candidate: Candidate) -> "CandidateSummary":
@@ -242,6 +244,8 @@ class CandidateSummary(BaseModel):
             total_score=candidate.total_score,
             composite=is_composite_candidate(candidate),
             span_count=len(candidate_clip_spans(candidate)),
+            selected=candidate.selected,
+            failure_tags=list(candidate.failure_tags or []),
         )
 
 
@@ -584,12 +588,24 @@ class FailureTagResponse(BaseModel):
 # --- 운영자 피드백 로그 ---
 
 
+class FeedbackMetadata(BaseModel):
+    """피드백 요청 metadata — reordered 액션의 new_rank 등."""
+
+    new_rank: int | None = None
+
+    # 서버가 채우는 필드 (클라이언트 전송 불필요)
+    reorder_from: int | None = None
+    reorder_to: int | None = None
+    episode_candidate_count: int | None = None
+    episode_selected_count: int | None = None
+
+
 class CandidateFeedbackCreateRequest(BaseModel):
     action: str  # FeedbackAction value
     reason: str | None = None
     # 항상 존재 — []=clear, ["tag",...]=overwrite+dedupe. 항상 Candidate.failure_tags와 동기화.
     failure_tags: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: FeedbackMetadata = Field(default_factory=FeedbackMetadata)
 
 
 class CandidateFeedbackSnapshotField(BaseModel):
@@ -616,13 +632,16 @@ class CandidateFeedbackResponse(BaseModel):
         def _parse_snapshot(raw: dict[str, str | int | float | bool | list[str]] | None) -> CandidateFeedbackSnapshotField:
             if not raw:
                 return CandidateFeedbackSnapshotField()
-            return CandidateFeedbackSnapshotField(
-                status=str(raw.get("status", "")),
-                selected=bool(raw.get("selected", False)),
-                candidate_index=int(raw.get("candidate_index", 0)),
-                total_score=float(raw.get("total_score", 0.0)),
-                failure_tags=list(raw.get("failure_tags") or []),
-            )
+            try:
+                return CandidateFeedbackSnapshotField(
+                    status=str(raw.get("status", "")),
+                    selected=bool(raw.get("selected", False)),
+                    candidate_index=int(raw.get("candidate_index", 0)),
+                    total_score=float(raw.get("total_score", 0.0)),
+                    failure_tags=list(raw.get("failure_tags") or []),
+                )
+            except (ValueError, TypeError):
+                return CandidateFeedbackSnapshotField()
 
         raw_meta = fb.metadata_json or {}
         safe_meta: dict[str, str | int | float | bool | None] = {

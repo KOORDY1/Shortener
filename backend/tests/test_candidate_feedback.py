@@ -352,6 +352,28 @@ class TestFeedbackSummaryAllFields:
         assert summary["latest_feedback_action"] is None
         assert summary["latest_feedback_reason"] is None
 
+    def test_detail_summary_matches_feedbacks_list_first(self) -> None:
+        """detail summary latest와 feedbacks list 첫 항목이 동일 기준으로 정렬된다."""
+        _, cids = _seed(1)
+        cid = cids[0]
+        client.post(f"/api/v1/candidates/{cid}/feedbacks", json={
+            "action": "rejected", "reason": "첫 번째",
+        })
+        client.post(f"/api/v1/candidates/{cid}/feedbacks", json={
+            "action": "selected", "reason": "두 번째",
+        })
+        client.post(f"/api/v1/candidates/{cid}/feedbacks", json={
+            "action": "edited", "reason": "세 번째",
+        })
+
+        detail = client.get(f"/api/v1/candidates/{cid}").json()
+        feedbacks = client.get(f"/api/v1/candidates/{cid}/feedbacks").json()
+
+        summary_action = detail["feedback_summary"]["latest_feedback_action"]
+        list_first_action = feedbacks["items"][0]["action"]
+        assert summary_action == list_first_action
+        assert summary_action == "edited"
+
 
 class TestEvaluateDbFeedback:
     def test_db_feedback_summary_not_empty(self) -> None:
