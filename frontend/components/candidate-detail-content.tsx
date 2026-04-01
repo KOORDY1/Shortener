@@ -165,7 +165,47 @@ export function CandidateDetailContent({
         <div className="row">
           <StatusBadge value={candidate.status} />
           <StatusBadge value={candidate.type} />
+          {candidate.selected ? <StatusBadge value="채택됨" /> : null}
         </div>
+        {candidate.feedback_summary.feedback_count > 0 ? (
+          <div className="grid three" style={{ marginTop: "0.75rem" }}>
+            <div className="kpi">
+              <span className="muted">피드백</span>
+              <strong>{candidate.feedback_summary.feedback_count}건</strong>
+            </div>
+            {candidate.feedback_summary.latest_feedback_action ? (
+              <div className="kpi">
+                <span className="muted">최근 액션</span>
+                <strong>{candidate.feedback_summary.latest_feedback_action}</strong>
+              </div>
+            ) : null}
+            {candidate.feedback_summary.latest_feedback_reason ? (
+              <div className="kpi">
+                <span className="muted">최근 사유</span>
+                <strong>{candidate.feedback_summary.latest_feedback_reason}</strong>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {candidate.failure_tags.length > 0 ? (
+          <div style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+            {candidate.failure_tags.map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  padding: "0.15rem 0.5rem",
+                  borderRadius: "0.75rem",
+                  fontSize: "0.75rem",
+                  background: "#fef2f2",
+                  color: "#991b1b",
+                  border: "1px solid #fecaca"
+                }}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       {visionReason || llmNote || generatedBy ? (

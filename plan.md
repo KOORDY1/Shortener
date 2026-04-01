@@ -7,11 +7,10 @@
 
 > **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료 ✅
 >
-> 1. ~~**reordered episode 전체 재정렬**~~ ✅ — `_reorder_episode_candidates()` 끼워넣기+shift, new_rank 동적 클램프(1~후보수), feedback metadata에 `reorder_from`/`reorder_to`/`episode_candidate_count` 기록
-> 2. ~~**feedback → Candidate.failure_tags 동기화**~~ ✅ — overwrite+dedupe, 모든 액션에서 동작
-> 3. ~~**CandidateDetailResponse 운영 필드**~~ ✅ — `selected`, `failure_tags`, `feedback_summary`(feedback_count, latest_feedback_action, latest_feedback_at, latest_feedback_reason)
-> 4. ~~**회귀 테스트 17건**~~ ✅ — selected/rejected 상태전이, failure_tags 동기화, snapshot 완전성, validation, reorder 전체순위보존+메타데이터+클램프, 피드백 목록, 상세응답 summary/reason/selected/tags, evaluate --include-db-feedback
-
+> 1. ~~**failure_tags clear semantics**~~ ✅ — `failure_tags: list[str] | None = None`으로 변경. `None`=미전송(기존 유지), `[]`=명시적 clear, `["tag",...]`=overwrite+dedupe. 테스트 3건 추가.
+> 2. ~~**reordered용 new_rank 입력 UI**~~ ✅ — 피드백 패널에서 action=reordered 선택 시 숫자 입력 필드 표시. 제출 시 metadata.new_rank에 포함. 이력에 순위 변경(#from→#to) 표시.
+> 3. ~~**feedback_summary 적극 표시**~~ ✅ — 후보 상세 화면 상태 패널에 피드백 건수/최근 액션/최근 사유를 KPI로 표시. failure_tags 뱃지 표시. selected 상태 배지 추가.
+> 4. ~~**회귀 테스트 23건**~~ ✅ — clear semantics(빈 배열→clear, 미전송→유지, snapshot 반영), feedback_summary 전체 필드 검증, count 증분, 빈 상태 기본값 테스트 추가.
 ---
 
 ## 1단계: `reordered`를 episode 전체 재정렬로 완성 ✅

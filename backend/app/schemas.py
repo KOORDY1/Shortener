@@ -587,7 +587,8 @@ class FailureTagResponse(BaseModel):
 class CandidateFeedbackCreateRequest(BaseModel):
     action: str  # FeedbackAction value
     reason: str | None = None
-    failure_tags: list[str] = Field(default_factory=list, max_length=10)
+    # None = 미전송(기존 tags 유지), [] = 명시적 clear, ["tag",...] = overwrite
+    failure_tags: list[str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

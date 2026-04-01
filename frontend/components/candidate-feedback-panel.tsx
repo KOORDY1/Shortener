@@ -23,7 +23,7 @@ const ACTION_DESCRIPTIONS: Record<FeedbackAction, string> = {
   selected: "이 후보를 쇼츠로 채택합니다 (상태 → selected)",
   rejected: "이 후보를 탈락시킵니다 (상태 → rejected)",
   edited: "트림/수정 의도를 기록합니다",
-  reordered: "순위 변경 의도를 기록합니다"
+  reordered: "목표 순위를 입력하면 에피소드 전체 순위가 재정렬됩니다"
 };
 
 type Props = {
@@ -50,6 +50,7 @@ export function CandidateFeedbackPanel({
   const [submitResult, setSubmitResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [currentStatus, setCurrentStatus] = useState(candidateStatus);
   const [currentSelected, setCurrentSelected] = useState(candidateSelected);
+  const [newRank, setNewRank] = useState("");
 
   const toggleTag = useCallback(
     async (tag: FailureType) => {
@@ -92,12 +93,18 @@ export function CandidateFeedbackPanel({
     setSaving(true);
     setSubmitResult(null);
     try {
+      const metadata: Record<string, string | number | boolean | null> =
+        feedbackAction === "reordered" && newRank !== ""
+          ? { new_rank: parseInt(newRank, 10) }
+          : {};
       const fb = await createCandidateFeedback(candidateId, {
         action: feedbackAction,
         reason: feedbackReason || undefined,
-        failure_tags: failureTags
+        failure_tags: failureTags,
+        metadata
       });
       setFeedbackReason("");
+      setNewRank("");
       setSubmitResult({ ok: true, message: `${FEEDBACK_ACTION_LABELS[feedbackAction]} 완료` });
 
       // 상태 반영
@@ -114,7 +121,7 @@ export function CandidateFeedbackPanel({
     } finally {
       setSaving(false);
     }
-  }, [candidateId, feedbackAction, feedbackReason, failureTags, loadFeedbacks, onStatusChange]);
+  }, [candidateId, feedbackAction, feedbackReason, failureTags, newRank, loadFeedbacks, onStatusChange]);
 
   return (
     <div className="panel">
@@ -180,6 +187,17 @@ export function CandidateFeedbackPanel({
             {ACTION_DESCRIPTIONS[feedbackAction]}
           </span>
         </div>
+        {feedbackAction === "reordered" ? (
+          <input
+            type="number"
+            min={1}
+            max={14}
+            placeholder="목표 순위"
+            value={newRank}
+            onChange={(e) => setNewRank(e.target.value)}
+            style={{ width: "5rem", padding: "0.4rem" }}
+          />
+        ) : null}
         <input
           type="text"
           placeholder="사유 (선택)"
@@ -266,6 +284,11 @@ export function CandidateFeedbackPanel({
               {fb.before_snapshot.status !== fb.after_snapshot.status ? (
                 <div className="muted" style={{ fontSize: "0.8rem" }}>
                   상태: {fb.before_snapshot.status} → {fb.after_snapshot.status}
+                </div>
+              ) : null}
+              {fb.action === "reordered" && fb.before_snapshot.candidate_index !== fb.after_snapshot.candidate_index ? (
+                <div className="muted" style={{ fontSize: "0.8rem" }}>
+                  순위: #{fb.before_snapshot.candidate_index} → #{fb.after_snapshot.candidate_index}
                 </div>
               ) : null}
               {fb.failure_tags.length > 0 ? (

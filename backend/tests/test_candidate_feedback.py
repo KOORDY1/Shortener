@@ -226,6 +226,96 @@ class TestFeedbackSummaryInDetail:
         assert "too_long" in detail["failure_tags"]
 
 
+class TestFailureTagsClearSemantics:
+    def test_empty_list_clears_tags(self) -> None:
+        """failure_tags=[] → Candidate.failure_tags를 빈 배열로 초기화."""
+        _, cids = _seed(1)
+        # 먼저 태그 설정
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "rejected", "failure_tags": ["no_payoff", "too_long"],
+        })
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert len(detail["failure_tags"]) == 2
+
+        # 빈 배열로 clear
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "edited", "failure_tags": [],
+        })
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert detail["failure_tags"] == []
+
+    def test_omitted_tags_preserves_existing(self) -> None:
+        """failure_tags 키 미전송 → 기존 Candidate.failure_tags 유지."""
+        _, cids = _seed(1)
+        # 먼저 태그 설정
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "rejected", "failure_tags": ["context_missing"],
+        })
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert "context_missing" in detail["failure_tags"]
+
+        # failure_tags 키 없이 피드백 생성
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "selected",
+        })
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert "context_missing" in detail["failure_tags"]
+
+    def test_snapshot_reflects_cleared_tags(self) -> None:
+        """after_snapshot.failure_tags가 clear 후 빈 배열을 반영."""
+        _, cids = _seed(1)
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "rejected", "failure_tags": ["weak_structure"],
+        })
+        resp = client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "edited", "failure_tags": [],
+        })
+        d = resp.json()
+        assert d["before_snapshot"]["failure_tags"] == ["weak_structure"]
+        assert d["after_snapshot"]["failure_tags"] == []
+
+
+class TestFeedbackSummaryAllFields:
+    def test_all_summary_fields_present(self) -> None:
+        """feedback_summary에 모든 필드가 채워지는지 확인."""
+        _, cids = _seed(1)
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "rejected", "reason": "맥락 부족", "failure_tags": ["context_missing"],
+        })
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        summary = detail["feedback_summary"]
+        assert summary["feedback_count"] == 1
+        assert summary["latest_feedback_action"] == "rejected"
+        assert summary["latest_feedback_reason"] == "맥락 부족"
+        assert summary["latest_feedback_at"] is not None
+
+    def test_summary_count_increments(self) -> None:
+        """피드백 추가 후 feedback_count가 증가하는지 확인."""
+        _, cids = _seed(1)
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "rejected", "reason": "첫 번째 사유",
+        })
+        detail1 = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert detail1["feedback_summary"]["feedback_count"] == 1
+
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "selected", "reason": "재검토 후 채택",
+        })
+        detail2 = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert detail2["feedback_summary"]["feedback_count"] == 2
+        # latest는 둘 중 하나 (동일 초 내 생성 시 순서 비결정적)
+        assert detail2["feedback_summary"]["latest_feedback_action"] in ("rejected", "selected")
+
+    def test_summary_empty_when_no_feedback(self) -> None:
+        """피드백 없으면 summary가 기본값."""
+        _, cids = _seed(1)
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        summary = detail["feedback_summary"]
+        assert summary["feedback_count"] == 0
+        assert summary["latest_feedback_action"] is None
+        assert summary["latest_feedback_reason"] is None
+
+
 class TestEvaluateDbFeedback:
     def test_db_feedback_summary_not_empty(self) -> None:
         """evaluate_candidates.py의 _db_feedback_summary가 DB 피드백을 올바르게 집계한다."""
