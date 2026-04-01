@@ -7,11 +7,92 @@
 
 > **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료 ✅
 >
-> 1. ~~**latest feedback tie-breaker**~~ ✅ — `created_at DESC, id DESC`로 정렬. feedbacks 목록도 동일 정렬.
-> 2. ~~**new_rank max 하드코딩 제거**~~ ✅ — `max={14}` 제거, 백엔드 clamp에 위임.
-> 3. ~~**feedback summary 액션 라벨**~~ ✅ — `FEEDBACK_ACTION_LABELS` 재사용, detail에 한글 라벨(채택/탈락/수정 기록/순위 변경) 표시. failure_tags도 `FAILURE_TYPE_LABELS`로 한글 표시.
-> 4. ~~**failure_tags 정책 문서화**~~ ✅ — 테스트 클래스 docstring에 정책 명시, plan.md에 "키 미전송→default []→clear" 추가.
+> 1. ~~**latest feedback deterministic 선택**~~ ✅ — `CandidateFeedback.created_seq` (Integer, unique, nullable) 추가. 피드백 생성 시 `max(created_seq)+1`로 삽입 순서 보장. 정렬 기준 `created_seq DESC NULLS LAST`. migration 0006.
+> 2. ~~**테스트 deterministic화**~~ ✅ — `test_summary_count_increments_and_latest_is_deterministic`에서 `latest_feedback_action == “selected”` 정확히 assert.
+> 3. ~~**plan.md 반영**~~ ✅
 
+---
+
+## 1단계: latest feedback 선택 기준을 더 안정적으로 정리 ✅
+수정 대상:
+- `backend/app/api/v1/candidate_read.py`
+- `backend/app/db/models.py`
+- `backend/alembic/versions/0006_feedback_created_seq.py`
+
+권장 우선순위:
+### 1안 (가장 작은 수정)
+- `CandidateFeedback` 모델에 `created_seq` 같은 auto-increment 정렬용 정수 컬럼을 추가
+- feedback 생성 시 DB가 자동 증가값을 부여하게 해라
+- latest 선택은:
+  - `order_by(CandidateFeedback.created_at.desc(), CandidateFeedback.created_seq.desc())`
+  - 또는 `created_seq DESC` 단독
+- 이 방식이 가장 명확하다
+
+### 2안 (컬럼 추가가 부담되면)
+- `created_at` 정밀도를 더 높일 수 있는지 확인
+- 단, 같은 timestamp 충돌 가능성이 여전히 남으므로 1안보다 덜 권장
+
+목표:
+- “latest feedback”이 UUID lexicographic order에 의존하지 않게 만들 것
+
+완료 기준: ✅ 달성
+- ✅ `created_seq DESC NULLS LAST` 기반으로 결정적 선택
+
+---
+
+## 2단계: 테스트를 deterministic하게 tighten ✅
+수정 대상:
+- `backend/tests/test_candidate_feedback.py`
+
+현재 문제:
+- `test_summary_count_increments()`가 아직 latest action을 `(selected, rejected)` 둘 중 하나로 허용한다
+
+구현 요구사항:
+- latest feedback 결정 기준을 고정했다면, 테스트도 하나로 고정해라
+- 예:
+  - 먼저 `rejected`
+  - 그 다음 `selected`
+  - detail 조회 시 `latest_feedback_action == "selected"`를 정확히 assert
+- 관련 주석도 “UUID라 비결정적” 같은 표현을 제거
+
+완료 기준: ✅ 달성
+- ✅ `latest_feedback_action == "selected"` 정확히 assert
+
+---
+
+## 3단계: plan.md 아주 짧게 반영 ✅
+수정 대상:
+- `plan.md`
+
+구현 요구사항:
+- feedback summary latest 선택 기준이 deterministic한 방식으로 보강됐다는 점을 한두 줄만 반영
+- 과장 금지
+- 예:
+  - “latest feedback 요약은 created_seq 기반으로 안정적으로 선택”
+  - 또는 실제 구현에 맞는 표현
+
+완료 기준: ✅ 달성
+
+---
+
+## 구현 원칙 요약
+- UUID 정렬에 기대지 말 것
+- latest feedback 선택을 더 결정적으로 만들 것
+- 테스트도 그 결정 규칙에 맞게 tighten
+- 최대한 작은 수정으로 마감
+
+---
+
+## 원하는 작업 방식
+- 먼저 아주 짧게 구현 계획 정리
+- 그 다음 실제 코드 수정
+- 마지막에
+  - 수정 파일
+  - latest feedback 선택 기준
+  - 바뀐 테스트
+  - 남은 리스크
+  - 추천 커밋 메시지 1개
+를 짧게 정리해줘
 ---
 
 ## 1단계: latest feedback 선택의 tie-breaker 보강 ✅
@@ -336,6 +417,10 @@ type CandidateFeedbackSummary = {
   latest_feedback_reason?: string | null;
 };
 ```
+
+**latest feedback 선택 기준:**
+- `CandidateFeedback.created_seq DESC NULLS LAST` — 삽입 순서 보장용 auto-increment 정수
+- UUID 정렬에 의존하지 않음. 동일 초 내 여러 피드백이 생겨도 결정적 선택 보장.
 
 **`CandidateDetailResponse`에 포함되는 직접 노출 필드:**
 - `selected: bool` — 후보 채택 여부

@@ -324,22 +324,24 @@ class TestFeedbackSummaryAllFields:
         assert summary["latest_feedback_reason"] == "맥락 부족"
         assert summary["latest_feedback_at"] is not None
 
-    def test_summary_count_increments(self) -> None:
-        """피드백 추가 후 feedback_count가 증가하는지 확인."""
+    def test_summary_count_increments_and_latest_is_deterministic(self) -> None:
+        """피드백 추가 후 feedback_count 증가 + latest는 created_seq 기반 결정적 선택."""
         _, cids = _seed(1)
         client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
             "action": "rejected", "reason": "첫 번째 사유",
         })
         detail1 = client.get(f"/api/v1/candidates/{cids[0]}").json()
         assert detail1["feedback_summary"]["feedback_count"] == 1
+        assert detail1["feedback_summary"]["latest_feedback_action"] == "rejected"
 
         client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
             "action": "selected", "reason": "재검토 후 채택",
         })
         detail2 = client.get(f"/api/v1/candidates/{cids[0]}").json()
         assert detail2["feedback_summary"]["feedback_count"] == 2
-        # tie-breaker(id DESC)로 latest가 더 안정적이나 UUID 특성상 비결정적 가능
-        assert detail2["feedback_summary"]["latest_feedback_action"] in ("rejected", "selected")
+        # created_seq auto-increment로 두 번째 피드백이 항상 latest
+        assert detail2["feedback_summary"]["latest_feedback_action"] == "selected"
+        assert detail2["feedback_summary"]["latest_feedback_reason"] == "재검토 후 채택"
 
     def test_summary_empty_when_no_feedback(self) -> None:
         """피드백 없으면 summary가 기본값."""

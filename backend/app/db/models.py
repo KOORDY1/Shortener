@@ -309,6 +309,8 @@ class CandidateFeedback(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_id: Mapped[str] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"))
+    # 삽입 순서 보장용 시퀀스 — SQLite rowid 기반 (latest feedback 결정적 선택에 사용)
+    created_seq: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
     action: Mapped[str] = mapped_column(String(32))  # FeedbackAction value
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure_tags: Mapped[list[str]] = mapped_column(JSON, default=list)

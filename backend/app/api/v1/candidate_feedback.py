@@ -183,8 +183,16 @@ def create_feedback(
     ) or 0
 
     deduped_tags = list(dict.fromkeys(request.failure_tags))
+
+    # created_seq: 삽입 순서 보장용 — max + 1
+    max_seq = db.scalar(
+        select(func.coalesce(func.max(CandidateFeedback.created_seq), 0))
+    ) or 0
+    next_seq = max_seq + 1
+
     feedback = CandidateFeedback(
         candidate_id=candidate.id,
+        created_seq=next_seq,
         action=request.action,
         reason=request.reason,
         failure_tags=deduped_tags,
@@ -211,7 +219,7 @@ def list_feedbacks(
         db.scalars(
             select(CandidateFeedback)
             .where(CandidateFeedback.candidate_id == candidate_id)
-            .order_by(CandidateFeedback.created_at.desc(), CandidateFeedback.id.desc())
+            .order_by(CandidateFeedback.created_seq.desc().nulls_last())
         )
     )
     total = db.scalar(
