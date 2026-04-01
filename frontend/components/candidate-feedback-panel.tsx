@@ -206,7 +206,6 @@ export function CandidateFeedbackPanel({
           <input
             type="number"
             min={1}
-            max={14}
             placeholder="목표 순위"
             value={newRank}
             onChange={(e) => setNewRank(e.target.value)}

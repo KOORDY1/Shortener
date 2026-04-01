@@ -255,8 +255,15 @@ class TestFeedbackSummaryInDetail:
 
 
 class TestFailureTagsClearSemantics:
+    """failure_tags 동기화 정책:
+    - feedback 생성 시 Candidate.failure_tags는 request.failure_tags로 항상 overwrite 동기화
+    - failure_tags=[] → clear
+    - failure_tags=["a","b","a"] → dedupe 후 ["a","b"]
+    - failure_tags 키 미전송(default=[]) → clear (보존 아님)
+    """
+
     def test_empty_list_clears_tags(self) -> None:
-        """failure_tags=[] → Candidate.failure_tags를 빈 배열로 초기화."""
+        """정책: failure_tags=[] → Candidate.failure_tags clear."""
         _, cids = _seed(1)
         # 먼저 태그 설정
         client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
@@ -273,7 +280,7 @@ class TestFailureTagsClearSemantics:
         assert detail["failure_tags"] == []
 
     def test_omitted_tags_clears_existing(self) -> None:
-        """failure_tags 키 미전송(default=[]) → Candidate.failure_tags가 항상 동기화(clear)."""
+        """정책: failure_tags 미전송(default=[]) → Candidate.failure_tags clear (보존 아님)."""
         _, cids = _seed(1)
         # 먼저 태그 설정
         client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
@@ -290,7 +297,7 @@ class TestFailureTagsClearSemantics:
         assert detail["failure_tags"] == []
 
     def test_snapshot_reflects_cleared_tags(self) -> None:
-        """after_snapshot.failure_tags가 clear 후 빈 배열을 반영."""
+        """정책: clear 후 after_snapshot.failure_tags가 빈 배열."""
         _, cids = _seed(1)
         client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
             "action": "rejected", "failure_tags": ["weak_structure"],
@@ -331,7 +338,7 @@ class TestFeedbackSummaryAllFields:
         })
         detail2 = client.get(f"/api/v1/candidates/{cids[0]}").json()
         assert detail2["feedback_summary"]["feedback_count"] == 2
-        # latest는 둘 중 하나 (동일 초 내 생성 시 순서 비결정적)
+        # tie-breaker(id DESC)로 latest가 더 안정적이나 UUID 특성상 비결정적 가능
         assert detail2["feedback_summary"]["latest_feedback_action"] in ("rejected", "selected")
 
     def test_summary_empty_when_no_feedback(self) -> None:

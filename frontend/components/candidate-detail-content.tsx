@@ -13,8 +13,11 @@ import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { formatDuration, formatPreciseTimecode, formatTimecode } from "@/lib/format";
 import { scoreKeyLabel } from "@/lib/labels";
+import { FAILURE_TYPE_LABELS, FEEDBACK_ACTION_LABELS } from "@/lib/types";
 import type {
   CandidateDetail,
+  FailureType,
+  FeedbackAction,
   Job,
   ScriptDraft,
   ShortClipRenderConfig,
@@ -176,7 +179,10 @@ export function CandidateDetailContent({
             {candidate.feedback_summary.latest_feedback_action ? (
               <div className="kpi">
                 <span className="muted">최근 액션</span>
-                <strong>{candidate.feedback_summary.latest_feedback_action}</strong>
+                <strong>
+                  {FEEDBACK_ACTION_LABELS[candidate.feedback_summary.latest_feedback_action as FeedbackAction]
+                    ?? candidate.feedback_summary.latest_feedback_action}
+                </strong>
               </div>
             ) : null}
             {candidate.feedback_summary.latest_feedback_reason ? (
@@ -209,7 +215,7 @@ export function CandidateDetailContent({
                   border: "1px solid #fecaca"
                 }}
               >
-                {tag}
+                {FAILURE_TYPE_LABELS[tag as FailureType] ?? tag}
               </span>
             ))}
           </div>

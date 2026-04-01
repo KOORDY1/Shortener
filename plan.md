@@ -7,11 +7,187 @@
 
 > **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료 ✅
 >
-> 1. ~~**failure_tags 항상 동기화**~~ ✅ — `default_factory=list`로 변경. 피드백 생성 시 항상 `Candidate.failure_tags`와 동기화. `[]`=clear, `["tag"]=overwrite+dedupe`. 간접 보존(None) 의미론 제거.
-> 2. ~~**reordered UI 보강**~~ ✅ — new_rank 빈값 시 제출 차단 + "새 순위를 입력하세요" 에러. 성공 시 "4위→2위 이동 완료" 메시지. 이력에 순위 전이 표시.
-> 3. ~~**feedback_summary 적극 표시**~~ ✅ — 후보 상세 화면에 피드백 건수/최근 액션/최근 사유/최근 시각 KPI 표시. failure_tags 뱃지. 0건이면 숨김.
-> 4. ~~**테스트 마감 25건**~~ ✅ — reorder→detail candidate_index 변경 검증, reorder feedback metadata detail 확인 추가. canonical shape 문서화.
+> 1. ~~**latest feedback tie-breaker**~~ ✅ — `created_at DESC, id DESC`로 정렬. feedbacks 목록도 동일 정렬.
+> 2. ~~**new_rank max 하드코딩 제거**~~ ✅ — `max={14}` 제거, 백엔드 clamp에 위임.
+> 3. ~~**feedback summary 액션 라벨**~~ ✅ — `FEEDBACK_ACTION_LABELS` 재사용, detail에 한글 라벨(채택/탈락/수정 기록/순위 변경) 표시. failure_tags도 `FAILURE_TYPE_LABELS`로 한글 표시.
+> 4. ~~**failure_tags 정책 문서화**~~ ✅ — 테스트 클래스 docstring에 정책 명시, plan.md에 "키 미전송→default []→clear" 추가.
 
+---
+
+## 1단계: latest feedback 선택의 tie-breaker 보강 ✅
+수정 대상:
+- `backend/app/api/v1/candidate_read.py`
+- 필요 시 테스트
+
+구현 요구사항:
+- 최신 피드백 조회 시 `created_at DESC`만 쓰지 말고 tie-breaker를 추가해라
+- 권장:
+  - `order_by(CandidateFeedback.created_at.desc(), CandidateFeedback.id.desc())`
+- 동일 초에 여러 feedback가 생겨도 latest action/reason이 더 안정적으로 선택되게 해라
+- 관련 테스트가 있다면 deterministic하게 정리해라
+  - 지금처럼 “둘 중 하나 허용”보다, 순서를 확정할 수 있으면 더 좋다
+
+완료 기준:
+- `feedback_summary.latest_feedback_*` 선택이 덜 비결정적이다
+
+---
+
+## 2단계: reordered `new_rank` 입력의 하드코딩 제거 ✅
+수정 대상:
+- `frontend/components/candidate-feedback-panel.tsx`
+- 필요 시 `frontend/components/candidate-detail-content.tsx`
+- 필요 시 타입
+
+현재 문제:
+- `new_rank` input이 `max=14` 고정이라 episode 후보 수와 안 맞을 수 있다
+
+구현 요구사항:
+- 아래 중 하나로 정리해라. 1안을 선호.
+1. `max` 속성을 제거하고 백엔드 clamp에 맡긴다
+2. 또는 episode candidate count를 프론트에 내려서 동적으로 `max` 설정
+- 내부툴 기준으론 1안이 단순하고 충분하다
+- placeholder/설명 문구는 유지
+
+완료 기준:
+- reorder UI가 특정 후보 수(14)에 묶이지 않는다
+
+---
+
+## 3단계: feedback summary 액션 라벨 표시 개선 ✅
+수정 대상:
+- `frontend/components/candidate-detail-content.tsx`
+- 필요 시 `frontend/lib/types.ts` 또는 labels util
+
+구현 요구사항:
+- detail 화면에서 `latest_feedback_action`을 raw string 대신 사용자 친화적 라벨로 보여줘
+- 예:
+  - `selected` → `채택`
+  - `rejected` → `탈락`
+  - `edited` → `수정 기록`
+  - `reordered` → `순위 변경`
+- 기존 피드백 패널에서 쓰는 action label map을 재사용할 수 있으면 좋다
+- 값이 없거나 unknown이면 raw fallback 허용
+
+완료 기준:
+- detail summary가 더 읽기 쉬워진다
+
+---
+
+## 4단계: failure_tags omission → clear 정책을 문서/테스트로 더 명확히 고정 ✅
+수정 대상:
+- `backend/tests/test_candidate_feedback.py`
+- `plan.md`
+
+구현 요구사항:
+- 현재 정책은:
+  - `failure_tags=[]` → clear
+  - `failure_tags` 키 미전송(default=[]) → clear
+- 이 정책을 그대로 유지한다면, 문서에 짧게 명시해라
+- `plan.md`에는 예를 들어:
+  - “feedback 생성 시 Candidate.failure_tags는 request.failure_tags로 overwrite 동기화되며, omission/default 빈 배열도 clear로 간주”
+- 테스트 이름/주석도 이 정책이 분명히 드러나게 정리해라
+- 과장 없이, 현재 동작을 설명하는 수준으로만 쓰면 된다
+
+완료 기준:
+- API 사용자/미래의 너/에이전트가 이 정책을 헷갈리지 않는다
+
+---
+
+작업이 끝난 후에 이후에 plan.md도 맞춰서 수정.
+
+
+---
+
+## 1단계: latest feedback 선택의 tie-breaker 보강 ✅
+수정 대상:
+- `backend/app/api/v1/candidate_read.py`
+- 필요 시 테스트
+
+구현 요구사항:
+- 최신 피드백 조회 시 `created_at DESC`만 쓰지 말고 tie-breaker를 추가해라
+- 권장:
+  - `order_by(CandidateFeedback.created_at.desc(), CandidateFeedback.id.desc())`
+- 동일 초에 여러 feedback가 생겨도 latest action/reason이 더 안정적으로 선택되게 해라
+- 관련 테스트가 있다면 deterministic하게 정리해라
+  - 지금처럼 “둘 중 하나 허용”보다, 순서를 확정할 수 있으면 더 좋다
+
+완료 기준:
+- `feedback_summary.latest_feedback_*` 선택이 덜 비결정적이다
+
+---
+
+## 2단계: reordered `new_rank` 입력의 하드코딩 제거 ✅
+수정 대상:
+- `frontend/components/candidate-feedback-panel.tsx`
+- 필요 시 `frontend/components/candidate-detail-content.tsx`
+- 필요 시 타입
+
+현재 문제:
+- `new_rank` input이 `max=14` 고정이라 episode 후보 수와 안 맞을 수 있다
+
+구현 요구사항:
+- 아래 중 하나로 정리해라. 1안을 선호.
+1. `max` 속성을 제거하고 백엔드 clamp에 맡긴다
+2. 또는 episode candidate count를 프론트에 내려서 동적으로 `max` 설정
+- 내부툴 기준으론 1안이 단순하고 충분하다
+- placeholder/설명 문구는 유지
+
+완료 기준:
+- reorder UI가 특정 후보 수(14)에 묶이지 않는다
+
+---
+
+## 3단계: feedback summary 액션 라벨 표시 개선 ✅
+수정 대상:
+- `frontend/components/candidate-detail-content.tsx`
+- 필요 시 `frontend/lib/types.ts` 또는 labels util
+
+구현 요구사항:
+- detail 화면에서 `latest_feedback_action`을 raw string 대신 사용자 친화적 라벨로 보여줘
+- 예:
+  - `selected` → `채택`
+  - `rejected` → `탈락`
+  - `edited` → `수정 기록`
+  - `reordered` → `순위 변경`
+- 기존 피드백 패널에서 쓰는 action label map을 재사용할 수 있으면 좋다
+- 값이 없거나 unknown이면 raw fallback 허용
+
+완료 기준:
+- detail summary가 더 읽기 쉬워진다
+
+---
+
+## 4단계: failure_tags omission → clear 정책을 문서/테스트로 더 명확히 고정 ✅
+수정 대상:
+- `backend/tests/test_candidate_feedback.py`
+- `plan.md`
+
+구현 요구사항:
+- 현재 정책은:
+  - `failure_tags=[]` → clear
+  - `failure_tags` 키 미전송(default=[]) → clear
+- 이 정책을 그대로 유지한다면, 문서에 짧게 명시해라
+- `plan.md`에는 예를 들어:
+  - “feedback 생성 시 Candidate.failure_tags는 request.failure_tags로 overwrite 동기화되며, omission/default 빈 배열도 clear로 간주”
+- 테스트 이름/주석도 이 정책이 분명히 드러나게 정리해라
+- 과장 없이, 현재 동작을 설명하는 수준으로만 쓰면 된다
+
+완료 기준:
+- API 사용자/미래의 너/에이전트가 이 정책을 헷갈리지 않는다
+
+---
+
+## 원하는 작업 방식
+- 먼저 아주 짧게 수정 계획 정리
+- 그 다음 실제 코드 수정
+- 마지막에
+  - 수정 파일
+  - tie-breaker 방식
+  - reordered input 변경 방식
+  - action label 표시 방식
+  - failure_tags clear 정책 문서화 내용
+  - 추천 커밋 메시지 1개
+를 짧게 정리해줘
 ---
 
 ## 1단계: `failure_tags=[]` clear semantics 명확화 ✅
@@ -170,7 +346,9 @@ type CandidateFeedbackSummary = {
 - 피드백 생성 시 `failure_tags` 필드는 항상 존재 (`default_factory=list`)
 - `[]` → Candidate.failure_tags clear
 - `["tag", ...]` → overwrite + dedupe
+- 키 미전송 → default `[]` → clear (기존 태그를 보존하지 않음)
 - 간접 보존(None) 의미론 없음 — 항상 동기화
+- 이 정책은 `TestFailureTagsClearSemantics` 테스트 클래스로 보호됨
 
 ---
 
