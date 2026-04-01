@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_candidate_or_404
+from app.api.v1.candidate_read import _build_feedback_summary
 from app.db.models import CandidateStatus
 from app.db.session import get_db
 from app.schemas import CandidateDetailResponse, CandidateRejectRequest, CandidateSelectionRequest
@@ -30,6 +31,7 @@ def select_candidate(
         candidate,
         candidate_segments(db, candidate),
         candidate_shots(db, candidate),
+        _build_feedback_summary(db, candidate_id),
     )
 
 
@@ -54,4 +56,5 @@ def reject_candidate(
         candidate,
         candidate_segments(db, candidate),
         candidate_shots(db, candidate),
+        _build_feedback_summary(db, candidate_id),
     )

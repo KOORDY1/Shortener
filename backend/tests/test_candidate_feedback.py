@@ -155,6 +155,39 @@ class TestReorderFeedback:
         d = client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={"action": "reordered"}).json()
         assert d["before_snapshot"]["candidate_index"] == d["after_snapshot"]["candidate_index"]
 
+    def test_reorder_metadata_has_from_to_count(self) -> None:
+        """feedback metadata에 reorder_from/reorder_to/episode_candidate_count가 기록된다."""
+        _, cids = _seed(5)
+        resp = client.post(f"/api/v1/candidates/{cids[3]}/feedbacks", json={
+            "action": "reordered", "metadata": {"new_rank": 2},
+        })
+        assert resp.status_code == 200
+        meta = resp.json()["metadata"]
+        assert meta["reorder_from"] == 4
+        assert meta["reorder_to"] == 2
+        assert meta["episode_candidate_count"] == 5
+
+    def test_reorder_clamps_beyond_range(self) -> None:
+        """new_rank > 후보 수 → 맨 뒤로 클램프, new_rank < 1 → 1로 클램프."""
+        _, cids = _seed(3)
+
+        # 범위 초과 → 맨 뒤
+        resp = client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "reordered", "metadata": {"new_rank": 999},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["metadata"]["reorder_to"] == 3
+        with SessionLocal() as s:
+            indices = sorted(s.get(Candidate, cid).candidate_index for cid in cids)  # type: ignore[union-attr]
+        assert indices == [1, 2, 3]
+
+        # 범위 미만 → 1
+        resp = client.post(f"/api/v1/candidates/{cids[2]}/feedbacks", json={
+            "action": "reordered", "metadata": {"new_rank": -5},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["metadata"]["reorder_to"] == 1
+
 
 class TestFeedbackList:
     def test_list_returns_feedbacks(self) -> None:
@@ -172,3 +205,45 @@ class TestFeedbackSummaryInDetail:
         detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
         assert detail["feedback_summary"]["feedback_count"] == 1
         assert detail["feedback_summary"]["latest_feedback_action"] == "selected"
+
+    def test_detail_includes_latest_feedback_reason(self) -> None:
+        _, cids = _seed(1)
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "rejected", "reason": "맥락 부족",
+        })
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert detail["feedback_summary"]["latest_feedback_reason"] == "맥락 부족"
+
+    def test_detail_selected_and_failure_tags(self) -> None:
+        _, cids = _seed(1)
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={
+            "action": "rejected", "failure_tags": ["no_payoff", "too_long"],
+        })
+        detail = client.get(f"/api/v1/candidates/{cids[0]}").json()
+        assert detail["selected"] is False
+        assert detail["status"] == "rejected"
+        assert "no_payoff" in detail["failure_tags"]
+        assert "too_long" in detail["failure_tags"]
+
+
+class TestEvaluateDbFeedback:
+    def test_db_feedback_summary_not_empty(self) -> None:
+        """evaluate_candidates.py의 _db_feedback_summary가 DB 피드백을 올바르게 집계한다."""
+        import importlib
+        import scripts.evaluate_candidates as eval_mod
+        importlib.reload(eval_mod)
+
+        _, cids = _seed(3)
+        # 피드백 생성
+        client.post(f"/api/v1/candidates/{cids[0]}/feedbacks", json={"action": "selected"})
+        client.post(f"/api/v1/candidates/{cids[1]}/feedbacks", json={
+            "action": "rejected", "failure_tags": ["context_missing"],
+        })
+
+        with SessionLocal() as session:
+            result = eval_mod._db_feedback_summary(session)
+
+        summary = result.get("db_feedback_summary", {})
+        assert summary.get("feedback_count", 0) >= 2
+        assert summary.get("selected_count", 0) >= 1
+        assert summary.get("rejected_count", 0) >= 1

@@ -7,11 +7,213 @@
 
 > **다음 우선순위 (후보 품질 개선 중심)** — 모두 구현 완료 ✅
 >
-> 1. ~~**reordered 진짜 순위 재정렬**~~ ✅ — `_reorder_episode_candidates()`: 같은 episode 후보를 한 트랜잭션에서 끼워넣기+shift, 인덱스 1~N 유일 보장, before/after snapshot 반영
-> 2. ~~**feedback → Candidate.failure_tags 동기화**~~ ✅ — `_apply_feedback_action()`에서 request.failure_tags 존재 시 overwrite+dedupe로 Candidate.failure_tags 자동 동기화
-> 3. ~~**Candidate 상세 응답에 피드백 요약 직접 노출**~~ ✅ — `CandidateDetailResponse`에 `selected`, `failure_tags`, `feedback_summary`(feedback_count, latest_feedback_action, latest_feedback_at) 추가. 프론트 `CandidateDetail` 타입도 반영, 별도 getFailureTags 호출 제거
-> 4. ~~**feedback 상태 전이 회귀 테스트**~~ ✅ — `tests/test_candidate_feedback.py` 12개 테스트: selected/rejected 상태변경, failure_tags 동기화, snapshot 완전성, validation, reorder 전체 순위 보존, 피드백 목록, 상세 응답 feedback_summary
-> 5. ~~**evaluate 리포트 품질 경향 확장**~~ ✅ — selected 원래 랭크 분포, failure_tag별 평균 점수, candidate_track × failure_tag 교차표, window_reason × selected/rejected 분포
+> 1. ~~**reordered episode 전체 재정렬**~~ ✅ — `_reorder_episode_candidates()` 끼워넣기+shift, new_rank 동적 클램프(1~후보수), feedback metadata에 `reorder_from`/`reorder_to`/`episode_candidate_count` 기록
+> 2. ~~**feedback → Candidate.failure_tags 동기화**~~ ✅ — overwrite+dedupe, 모든 액션에서 동작
+> 3. ~~**CandidateDetailResponse 운영 필드**~~ ✅ — `selected`, `failure_tags`, `feedback_summary`(feedback_count, latest_feedback_action, latest_feedback_at, latest_feedback_reason)
+> 4. ~~**회귀 테스트 17건**~~ ✅ — selected/rejected 상태전이, failure_tags 동기화, snapshot 완전성, validation, reorder 전체순위보존+메타데이터+클램프, 피드백 목록, 상세응답 summary/reason/selected/tags, evaluate --include-db-feedback
+
+---
+
+## 1단계: `reordered`를 episode 전체 재정렬로 완성 ✅
+수정 대상:
+- `backend/app/api/v1/candidate_feedback.py`
+- 필요 시 `backend/app/api/v1/candidates.py`
+- 필요 시 `backend/app/schemas.py`
+
+현재 문제:
+- `reordered` action은 현재 후보 하나의 `candidate_index`만 바꾼다
+- 같은 episode의 다른 후보 index는 shift되지 않아서 중복 index가 생길 수 있다
+
+구현 요구사항:
+- `request.metadata["new_rank"]`가 정수로 들어오면, **해당 candidate가 속한 episode의 전체 후보 순위**를 재정렬해라
+- 권장 규칙:
+  - 현재 episode 후보를 `candidate_index ASC, total_score DESC` 정도로 읽어온다
+  - 대상 후보를 리스트에서 제거
+  - `new_rank` 위치에 삽입
+  - 1부터 다시 연속 인덱스를 부여
+- 범위:
+  - `new_rank < 1`이면 1로 클램프
+  - `new_rank > candidate_count`이면 맨 뒤로
+- 트랜잭션:
+  - 한 트랜잭션 안에서 전체 episode 후보들의 `candidate_index`를 갱신
+- snapshot:
+  - `before_snapshot` / `after_snapshot`에 최소한 대상 후보의 `candidate_index` 변화가 보이게 유지
+  - 가능하면 feedback `metadata`에 `reorder_from`, `reorder_to`, `episode_candidate_count`를 남겨라
+
+완료 기준: ✅ 모두 달성
+- ✅ `reordered` action 이후 같은 episode 내 `candidate_index`가 1..N으로 일관된다
+- ✅ 중복/누락 인덱스가 생기지 않는다
+- ✅ feedback metadata에 `reorder_from`/`reorder_to`/`episode_candidate_count` 기록
+- ✅ `new_rank` 범위 동적 클램프 (1 ~ episode 후보 수)
+
+---
+
+## 2단계: feedback 생성 시 `Candidate.failure_tags` 동기화 ✅
+수정 대상:
+- `backend/app/api/v1/candidate_feedback.py`
+- 필요 시 `backend/app/schemas.py`
+
+현재 문제:
+- feedback 레코드의 `failure_tags`와 Candidate 현재 `failure_tags`가 따로 놀 수 있다
+- UI는 보통 `setFailureTags()`를 먼저 호출하지만, API 단독 사용 기준으로는 불일치 가능
+
+구현 요구사항:
+- `create_feedback()`에서 `request.failure_tags`를 받으면 **Candidate.failure_tags도 동기화**해라
+- 정책 권장:
+  - 기본은 **overwrite + dedupe**
+  - 즉 `candidate.failure_tags = unique(request.failure_tags)`
+- 단, action별 예외가 필요하면 아래처럼 가능:
+  - `selected`일 때도 태그 유지 허용
+  - `rejected`일 때는 반드시 동기화
+- `after_snapshot.failure_tags`는 동기화된 최종 상태를 반영해야 한다
+- feedback `failure_tags`와 Candidate 현재 `failure_tags`가 같은 의미 계층을 갖도록 정리해라
+
+완료 기준: ✅ 모두 달성
+- ✅ feedback 생성만으로도 Candidate 현재 failure_tags가 신뢰 가능한 상태가 된다
+- ✅ evaluate나 상세 응답이 Candidate.failure_tags를 봐도 일관성이 있다
+
+---
+
+## 3단계: Candidate 상세 응답에 운영 필드 직접 포함 ✅
+수정 대상:
+- `backend/app/schemas.py`
+- `backend/app/api/v1/candidates.py`
+- `frontend/lib/types.ts`
+- `frontend/components/candidate-detail-content.tsx`
+- 필요 시 `frontend/lib/api.ts`
+
+현재 문제:
+- 프론트가 `candidate.status === "selected"` 같은 식으로 상태를 간접 추론한다
+- feedback 요약도 별도 호출 없이는 후보 상세 응답에 없다
+
+구현 요구사항:
+- `CandidateDetailResponse`에 아래 필드를 추가해라:
+  - `selected: bool`
+  - `failure_tags: list[str]`
+  - `feedback_count: int`
+  - `latest_feedback_action: str | null`
+  - `latest_feedback_at: datetime | null`
+- 가능하면 `latest_feedback_reason: str | null`도 검토
+- 상세 응답 생성 시:
+  - `CandidateFeedback`를 candidate_id 기준으로 count / latest 1건 조회
+- 프론트는 이제:
+  - `candidate.selected`
+  - `candidate.failure_tags`
+  - `candidate.feedback_count`
+  - `candidate.latest_feedback_*`
+  를 직접 사용하게 정리
+- `CandidateFeedbackPanel`에 넘기는 props도
+  - `candidateStatus`
+  - `candidateSelected`
+  를 추론 대신 상세 응답 기반으로 넘겨라
+
+완료 기준: ✅ 모두 달성
+- ✅ 후보 상세 화면이 상태를 추론하지 않고 API 응답을 직접 사용한다
+- ✅ 추후 후보 목록/운영 패널 확장에도 쓰기 좋은 응답 shape가 된다
+
+---
+
+## 4단계: feedback 운영 로직 회귀 테스트 추가 ✅
+수정 대상:
+- 권장: `backend/tests/` 신설
+- 최소한 `backend/scripts/smoke_test.py` 보강
+- 필요 시 pytest 설정 파일
+
+구현 요구사항:
+- 아래 케이스를 자동 테스트로 추가해라
+
+### 백엔드 필수 테스트
+1. `selected` feedback 생성 시:
+   - Candidate.status == `selected`
+   - Candidate.selected == True
+   - `after_snapshot.selected == True`
+
+2. `rejected` feedback 생성 시:
+   - Candidate.status == `rejected`
+   - Candidate.selected == False
+   - `after_snapshot.status == "rejected"`
+
+3. feedback 생성 시 `failure_tags` 동기화:
+   - request.failure_tags가 Candidate.failure_tags에 반영되는지
+   - `after_snapshot.failure_tags`에도 반영되는지
+
+4. `reordered` feedback 생성 시:
+   - episode 전체 `candidate_index`가 1..N 연속인지
+   - 대상 후보가 요청한 순위로 이동했는지
+   - 다른 후보들이 적절히 shift됐는지
+
+5. invalid action / invalid failure tag validation:
+   - 기존 422 유지
+
+6. `CandidateDetailResponse` 확장 필드:
+   - `selected`
+   - `failure_tags`
+   - `feedback_count`
+   - `latest_feedback_action`
+   - `latest_feedback_at`
+   가 실제 응답에 채워지는지
+
+7. `evaluate_candidates.py --include-db-feedback`:
+   - DB feedback summary가 비어 있지 않게 나오는지
+   - 최소 `feedback_count`, `selected_count`, `rejected_count`가 계산되는지
+
+### 구현 방식 권장
+- 가능하면 `pytest` + test DB fixture
+- 시간이 부족하면 smoke_test에라도 넣되, 장기적으로는 `backend/tests/test_candidate_feedback.py`로 분리
+
+완료 기준: ✅ 달성
+- ✅ feedback 운영 로직이 단순 수동 확인 대상이 아니라 자동 회귀 방어 대상이 된다 — 17개 pytest 테스트
+
+---
+
+## 5단계: 프론트 피드백 패널의 작은 운영 UX 마감
+수정 대상:
+- `frontend/components/candidate-feedback-panel.tsx`
+- `frontend/components/candidate-detail-content.tsx`
+
+구현 요구사항:
+- 아래 소규모 보강까지 하면 좋다
+  - `reordered` 액션 선택 시 `new_rank` 입력 UI 표시
+  - `selected/rejected` quick action 버튼 유지
+  - 현재 `failure_tags`를 상세 상단에 요약 표시
+  - `feedback_count` / `latest_feedback_action` 간단 표시
+- 내부툴 기준이므로 미니멀하게 해도 괜찮다
+- 지금 있는 자동 로드/결과 메시지/상태 전이 표시 구조는 유지
+
+완료 기준:
+- 운영자가 reordered까지 UI에서 자연스럽게 쓸 수 있다
+- 상세 화면에서 상태/피드백 요약이 더 바로 보인다
+
+---
+
+## 6단계: plan.md 업데이트
+수정 대상:
+- `plan.md`
+
+구현 요구사항:
+- 아래를 반영해 최신화해라
+  - feedback action이 이제 Candidate 상태를 실제로 바꿈
+  - `reordered`는 episode 전체 재정렬
+  - feedback 생성 시 Candidate.failure_tags 동기화
+  - Candidate detail 응답에 feedback summary 포함
+  - feedback 운영 로직 회귀 테스트 추가
+- “남은 핵심 과제”도 필요하면 최신화
+  - 예: 이제 feedback 상태 반영은 완료, 다음은 feedback 기반 weight tuning / 추천 정책
+
+완료 기준:
+- 문서가 구현 상태를 과장 없이 반영한다
+
+---
+
+## 구현 원칙 요약
+- `reordered`는 후보 하나만 바꾸는 게 아니라 episode 전체 순위 재정렬이어야 함
+- feedback의 `failure_tags`와 Candidate 현재 `failure_tags`는 일관돼야 함
+- Candidate 상세 응답은 운영용 필드를 직접 제공해야 함
+- feedback는 운영 핵심 로직이므로 자동 테스트로 보호해야 함
+- 기존 API path는 유지하고, 현재 구조 위에서 보강
+
+---
+
 
 ---
 

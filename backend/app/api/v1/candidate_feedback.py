@@ -82,14 +82,34 @@ def _apply_feedback_action(
         candidate.metadata_json = meta
 
     elif action == FeedbackAction.REORDERED.value:
-        new_rank = request.metadata.get("new_rank")
-        if isinstance(new_rank, int) and 1 <= new_rank <= 14:
-            _reorder_episode_candidates(db, candidate, new_rank)
-        meta = dict(candidate.metadata_json or {})
-        meta["reordered"] = True
-        candidate.metadata_json = meta
+        raw_rank = request.metadata.get("new_rank")
+        # int-like 값 허용 (float 5.0, str "5" 등도 변환 시도)
+        resolved_rank: int | None = None
+        if isinstance(raw_rank, int):
+            resolved_rank = raw_rank
+        elif isinstance(raw_rank, float) and raw_rank == int(raw_rank):
+            resolved_rank = int(raw_rank)
+        elif isinstance(raw_rank, str) and raw_rank.isdigit():
+            resolved_rank = int(raw_rank)
 
-    # 2순위: feedback.failure_tags → Candidate.failure_tags 동기화 (overwrite + dedupe)
+        if resolved_rank is not None:
+            old_rank = candidate.candidate_index
+            episode_count = db.scalar(
+                select(func.count())
+                .select_from(Candidate)
+                .where(Candidate.episode_id == candidate.episode_id)
+            ) or 1
+            clamped_rank = max(1, min(resolved_rank, episode_count))
+            _reorder_episode_candidates(db, candidate, clamped_rank)
+            request.metadata["reorder_from"] = old_rank
+            request.metadata["reorder_to"] = clamped_rank
+            request.metadata["episode_candidate_count"] = episode_count
+            meta = dict(candidate.metadata_json or {})
+            meta["reordered"] = True
+            candidate.metadata_json = meta
+        # new_rank가 없거나 변환 불가 시 — reordered 표시하지 않고 로그만 기록
+
+    # feedback.failure_tags → Candidate.failure_tags 동기화 (overwrite + dedupe)
     if request.failure_tags:
         candidate.failure_tags = list(dict.fromkeys(request.failure_tags))
 
@@ -163,11 +183,12 @@ def create_feedback(
         )
     ) or 0
 
+    deduped_tags = list(dict.fromkeys(request.failure_tags))
     feedback = CandidateFeedback(
         candidate_id=candidate.id,
         action=request.action,
         reason=request.reason,
-        failure_tags=list(request.failure_tags),
+        failure_tags=deduped_tags,
         before_snapshot=before_snapshot,
         after_snapshot=after_snapshot,
         metadata_json={

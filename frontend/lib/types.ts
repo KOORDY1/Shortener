@@ -96,6 +96,7 @@ export type CandidateFeedbackSummary = {
   feedback_count: number;
   latest_feedback_action?: string | null;
   latest_feedback_at?: string | null;
+  latest_feedback_reason?: string | null;
 };
 
 export type CandidateDetail = {

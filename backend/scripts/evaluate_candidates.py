@@ -466,16 +466,11 @@ def _db_feedback_summary(
         }
     """
     # 대상 에피소드 결정
+    stmt = select(Candidate)
     if episode_ids:
-        candidate_filter = Candidate.episode_id.in_(episode_ids)
-    else:
-        candidate_filter = True  # noqa: E712 — 전체
+        stmt = stmt.where(Candidate.episode_id.in_(episode_ids))
 
-    candidates = list(
-        db.scalars(
-            select(Candidate).where(candidate_filter)  # type: ignore[arg-type]
-        )
-    )
+    candidates = list(db.scalars(stmt))
     if not candidates:
         return {"db_feedback_summary": {}, "db_feedback_by_episode": {}}
 

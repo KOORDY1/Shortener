@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_candidate_or_404
@@ -15,15 +15,12 @@ router = APIRouter(tags=["candidates"])
 
 def _build_feedback_summary(db: Session, candidate_id: str) -> CandidateFeedbackSummary:
     """후보의 피드백 요약(건수, 최신 액션/시각)을 DB에서 조회한다."""
-    feedbacks = list(
-        db.scalars(
-            select(CandidateFeedback)
-            .where(CandidateFeedback.candidate_id == candidate_id)
-            .order_by(CandidateFeedback.created_at.desc())
-            .limit(1)
-        )
-    )
-    from sqlalchemy import func
+    latest = db.scalars(
+        select(CandidateFeedback)
+        .where(CandidateFeedback.candidate_id == candidate_id)
+        .order_by(CandidateFeedback.created_at.desc())
+        .limit(1)
+    ).first()
 
     count = db.scalar(
         select(func.count())
@@ -31,12 +28,12 @@ def _build_feedback_summary(db: Session, candidate_id: str) -> CandidateFeedback
         .where(CandidateFeedback.candidate_id == candidate_id)
     ) or 0
 
-    if feedbacks:
-        latest = feedbacks[0]
+    if latest:
         return CandidateFeedbackSummary(
             feedback_count=count,
             latest_feedback_action=latest.action,
             latest_feedback_at=latest.created_at,
+            latest_feedback_reason=latest.reason,
         )
     return CandidateFeedbackSummary(feedback_count=count)
 

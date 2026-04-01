@@ -256,6 +256,7 @@ class CandidateFeedbackSummary(BaseModel):
     feedback_count: int = 0
     latest_feedback_action: str | None = None
     latest_feedback_at: datetime | None = None
+    latest_feedback_reason: str | None = None
 
 
 class CandidateDetailResponse(BaseModel):

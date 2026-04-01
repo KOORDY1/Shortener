@@ -69,13 +69,17 @@ export function CandidateFeedbackPanel({
     [candidateId, failureTags]
   );
 
+  const [feedbackLoadError, setFeedbackLoadError] = useState(false);
+
   const loadFeedbacks = useCallback(async () => {
     try {
+      setFeedbackLoadError(false);
       const result = await getCandidateFeedbacks(candidateId);
       setFeedbacks(result.items);
       setFeedbacksLoaded(true);
     } catch {
-      // silently fail
+      setFeedbackLoadError(true);
+      setFeedbacksLoaded(true);
     }
   }, [candidateId]);
 
@@ -226,6 +230,8 @@ export function CandidateFeedbackPanel({
       </h3>
       {!feedbacksLoaded ? (
         <p className="muted" style={{ fontSize: "0.85rem" }}>불러오는 중…</p>
+      ) : feedbackLoadError ? (
+        <p style={{ fontSize: "0.85rem", color: "#991b1b" }}>피드백 이력을 불러오지 못했습니다.</p>
       ) : feedbacks.length === 0 ? (
         <p className="muted" style={{ fontSize: "0.85rem" }}>기록된 피드백이 없습니다.</p>
       ) : (
