@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     celery_result_backend: str = "cache+memory://"
     celery_task_always_eager: bool = True
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4.1"
+    openai_model: str = "gpt-5.1"
     allow_mock_llm_fallback: bool = True
     # true이면 분석 파이프라인에서 후보 목록을 OpenAI로 재조정(자막 발췌만 전달, 영상 바이너리 없음)
     candidate_rerank_llm: bool = False
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     vision_max_candidates_per_episode: int = 8
     vision_max_frames_per_candidate: int = 6
     vision_image_max_width: int = 640
-    vision_model: str = "gpt-4.1"
+    vision_model: str = "gpt-5.1"
     vision_prompt_version: str = "vision_candidate_rerank_v2"
     vision_scan_version: str = "vision_scan_v1"
     analysis_pipeline_version: str = "analysis_pipeline_v2"
@@ -64,7 +64,17 @@ class Settings(BaseSettings):
     # LLM Arc Judge
     llm_arc_judge_enabled: bool = False
     llm_arc_judge_top_k: int = 5
-    llm_arc_judge_model: str = "gpt-4.1-mini"
+    llm_arc_judge_model: str = "gpt-5.1-mini"
+
+    # LLM-first 후보 추천
+    llm_candidate_enabled: bool = False
+    llm_candidate_model: str = "gpt-5.1-mini"
+    llm_candidate_max_suggestions: int = 10
+    llm_candidate_prompt_version: str = "v1"  # 프롬프트 A/B 테스트용
+    llm_candidate_cache_enabled: bool = True   # 동일 자막 재분석 시 LLM 캐시 사용
+    llm_candidate_verify_enabled: bool = False  # Pass 2 검증 활성화
+    llm_candidate_verify_model: str = "gpt-5.1-mini"
+    llm_candidate_few_shot_count: int = 5       # few-shot 예시 최대 수
 
     # 스코어링 프로파일 (A/B 테스트용)
     scoring_profile: str = "default"  # "default" | "reaction_heavy" | "payoff_heavy"

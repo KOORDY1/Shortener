@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiBaseUrl } from "@/lib/api";
+import { apiBaseUrl, patchTranscriptSegment } from "@/lib/api";
 import { AssEditor } from "@/components/short-clip/ass-editor";
 import { OutputPresetControls } from "@/components/short-clip/output-preset-controls";
 import { RenderActions } from "@/components/short-clip/render-actions";
@@ -518,6 +518,11 @@ export function ShortClipPanel({
                 [segmentId]: text
               }))
             }
+            onCueEditSave={(segmentId, text) => {
+              void patchTranscriptSegment(segmentId, text).catch(() => {
+                // 원본 저장 실패해도 렌더링용 override는 유지
+              });
+            }}
             onDownloadAss={() => {
               void downloadAss();
             }}

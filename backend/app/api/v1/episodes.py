@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_episode_or_404
 from app.core.config import get_settings
-from app.db.models import Candidate, Episode, Job, JobType
+from app.db.models import Candidate, Episode, Job, JobType, TranscriptSegment
 from app.db.session import get_db
 from app.schemas import (
     AnalyzeRequest,
@@ -24,6 +24,7 @@ from app.schemas import (
     JobListResponse,
     JobResponse,
     ShotResponse,
+    TranscriptSegmentPatchRequest,
     TranscriptSegmentResponse,
     TriggerJobResponse,
 )
@@ -260,3 +261,23 @@ def list_episode_candidates(
     return CandidateListResponse(
         items=[CandidateSummary.from_model(item) for item in items], total=len(items)
     )
+
+
+@router.patch(
+    "/transcript-segments/{segment_id}",
+    response_model=TranscriptSegmentResponse,
+    tags=["transcript"],
+)
+def patch_transcript_segment(
+    segment_id: str,
+    request: TranscriptSegmentPatchRequest,
+    db: Session = Depends(get_db),
+) -> TranscriptSegmentResponse:
+    segment = db.get(TranscriptSegment, segment_id)
+    if segment is None:
+        raise HTTPException(status_code=404, detail="TranscriptSegment not found")
+    segment.text = request.text
+    db.add(segment)
+    db.commit()
+    db.refresh(segment)
+    return TranscriptSegmentResponse.from_model(segment)

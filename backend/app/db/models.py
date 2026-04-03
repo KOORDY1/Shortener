@@ -207,7 +207,7 @@ class Candidate(Base):
         back_populates="candidate",
         cascade="all, delete-orphan",
     )
-    jobs: Mapped[list[Job]] = relationship(back_populates="candidate")
+    jobs: Mapped[list[Job]] = relationship(back_populates="candidate", cascade="all, delete-orphan")
     video_drafts: Mapped[list["VideoDraft"]] = relationship(
         back_populates="candidate",
         cascade="all, delete-orphan",

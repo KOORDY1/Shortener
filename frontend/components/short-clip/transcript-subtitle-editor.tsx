@@ -30,6 +30,7 @@ type Props = {
   onBackgroundBoxChange: (value: boolean) => void;
   onBoldChange: (value: boolean) => void;
   onCueEditChange: (segmentId: string, text: string) => void;
+  onCueEditSave: (segmentId: string, text: string) => void;
   onDownloadAss: () => void;
 };
 
@@ -60,6 +61,7 @@ export function TranscriptSubtitleEditor({
   onBackgroundBoxChange,
   onBoldChange,
   onCueEditChange,
+  onCueEditSave,
   onDownloadAss
 }: Props) {
   return (
@@ -189,6 +191,12 @@ export function TranscriptSubtitleEditor({
                   rows={2}
                   value={cueEdits[segment.id] ?? segment.text}
                   onChange={(e) => onCueEditChange(segment.id, e.target.value)}
+                  onBlur={(e) => {
+                    const newText = e.target.value;
+                    if (newText !== segment.text) {
+                      onCueEditSave(segment.id, newText);
+                    }
+                  }}
                 />
               </div>
             ))}

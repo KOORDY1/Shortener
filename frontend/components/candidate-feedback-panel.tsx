@@ -61,13 +61,14 @@ export function CandidateFeedbackPanel({
       setSaving(true);
       try {
         await setFailureTags(candidateId, next);
+        onStatusChange?.();
       } catch {
         setFailureTagsState(failureTags);
       } finally {
         setSaving(false);
       }
     },
-    [candidateId, failureTags]
+    [candidateId, failureTags, onStatusChange]
   );
 
   const [feedbackLoadError, setFeedbackLoadError] = useState(false);

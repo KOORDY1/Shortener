@@ -22,6 +22,11 @@ from app.services.candidate_rerank import rerank_candidates_for_episode
 from app.services.storage_service import episode_root, write_placeholder
 from app.services.candidate_generation import ScoredWindow, build_candidates_for_episode, dedupe_scored_windows
 from app.services.composite_candidate_generation import build_composite_candidates
+from app.services.llm_candidate_service import (
+    llm_suggestions_to_scored_windows,
+    suggest_candidates_with_llm,
+    verify_candidates_with_llm,
+)
 from app.services.keyframe_extraction import extract_keyframes_for_episode
 from app.services.media_probe import probe_media_metadata
 from app.services.proxy_transcoding import ensure_analysis_proxy
@@ -435,10 +440,61 @@ def generate_candidates_step(db: Session, payload: dict) -> dict:
     mark_analysis_running(episode, "generate_candidates")
 
     perf: dict[str, object] = {}
+    settings = get_settings()
 
+    # --- LLM-first 후보 추천 ---
+    llm_windows: list[ScoredWindow] = []
+    if settings.llm_candidate_enabled:
+        segments_for_llm = list(
+            db.scalars(
+                select(TranscriptSegment)
+                .where(TranscriptSegment.episode_id == episode_id)
+                .order_by(TranscriptSegment.start_time.asc())
+            )
+        )
+        t0 = time.perf_counter()
+        llm_suggestions = suggest_candidates_with_llm(
+            segments_for_llm,
+            max_suggestions=settings.llm_candidate_max_suggestions,
+            target_channel=episode.target_channel or "kr_us_drama",
+            db=db,
+        )
+        perf["llm_candidate_ms"] = int((time.perf_counter() - t0) * 1000)
+        perf["llm_candidate_count"] = len(llm_suggestions)
+
+        # Pass 2: LLM 검증 (활성화 시)
+        if llm_suggestions and settings.llm_candidate_verify_enabled:
+            t0v = time.perf_counter()
+            llm_suggestions = verify_candidates_with_llm(llm_suggestions, segments_for_llm)
+            perf["llm_verify_ms"] = int((time.perf_counter() - t0v) * 1000)
+            perf["llm_verify_kept"] = len(llm_suggestions)
+
+        if llm_suggestions:
+            shots_for_llm = list(
+                db.scalars(
+                    select(Shot).where(Shot.episode_id == episode_id).order_by(Shot.shot_index.asc())
+                )
+            )
+            timeline_end_est = float(episode.duration_seconds or 0.0)
+            avg_cut_rate = len(shots_for_llm) / max(timeline_end_est, 1.0)
+            llm_windows = llm_suggestions_to_scored_windows(
+                llm_suggestions,
+                segments_for_llm,
+                shots=shots_for_llm,
+                episode_avg_cut_rate=avg_cut_rate,
+            )
+            logger.info("[%s] LLM-first: %d개 후보 추천", episode_id, len(llm_windows))
+        else:
+            logger.info("[%s] LLM-first: 추천 없음 — heuristic fallback", episode_id)
+
+    # --- Heuristic 후보 생성 (LLM 없을 때 주력 / 있을 때 보완) ---
     t0 = time.perf_counter()
     scored_windows = build_candidates_for_episode(db, episode_id)
     perf["candidate_gen_ms"] = int((time.perf_counter() - t0) * 1000)
+
+    # LLM 후보를 heuristic 결과 앞에 병합 (점수 우선)
+    if llm_windows:
+        scored_windows = llm_windows + scored_windows
 
     # 임베딩 시그널 사용 현황 집계
     emb_attempted = sum(

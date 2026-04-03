@@ -13,6 +13,7 @@ import {
   FeedbackAction,
   JobListResponse,
   ScriptDraftListResponse,
+  TranscriptSegment,
   VideoDraftDetail,
   VideoDraftListResponse
 } from "@/lib/types";
@@ -253,6 +254,27 @@ export async function createCandidateFeedback(
     );
   }
   return (await response.json()) as CandidateFeedback;
+}
+
+// --- 자막 세그먼트 수정 ---
+
+export async function patchTranscriptSegment(
+  segmentId: string,
+  text: string
+): Promise<TranscriptSegment> {
+  const response = await fetch(`${apiBaseUrl}/transcript-segments/${segmentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new ApiHttpError(
+      response.status,
+      `API request failed: ${response.status} ${response.statusText}`
+    );
+  }
+  return (await response.json()) as TranscriptSegment;
 }
 
 export { apiBaseUrl };

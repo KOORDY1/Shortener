@@ -209,6 +209,10 @@ class TranscriptSegmentResponse(BaseModel):
         )
 
 
+class TranscriptSegmentPatchRequest(BaseModel):
+    text: str = Field(max_length=4000)
+
+
 class EpisodeTimelineResponse(BaseModel):
     episode_id: str
     shots: list[ShotResponse]
